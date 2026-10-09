@@ -19,7 +19,7 @@ DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
 
 REQUEST_TIMEOUT = 180
 MAX_ATTEMPTS = 3
-MAX_VISION_IMAGES = 4
+MAX_VISION_IMAGES = 3  # حد النموذج: 3 صور في الطلب الواحد
 
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
@@ -416,7 +416,7 @@ def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
 
 
 def analyze_images(images: list[Image.Image]) -> dict[str, Any]:
-    """يحلل حتى 4 صور ويعيد خطة تصميم بإحداثيات للعناصر المهمة."""
+    """يحلل حتى 3 صور ويعيد خطة تصميم بإحداثيات للعناصر المهمة."""
     if not images:
         raise GrokError("لا توجد صور لتحليلها.")
 
@@ -425,6 +425,12 @@ def analyze_images(images: list[Image.Image]) -> dict[str, Any]:
     model = (
         os.getenv("GROQ_VISION_MODEL", "").strip()
         or DEFAULT_VISION_MODEL
+    )
+
+    four_grid_rule = (
+        "- four_grid: أربع صور مفيدة في شبكة 2×2."
+        if n >= 4
+        else "- four_grid: ممنوع استخدامه هنا لأن عدد الصور أقل من 4."
     )
 
     content: list[dict[str, Any]] = [{
@@ -455,7 +461,7 @@ def analyze_images(images: list[Image.Image]) -> dict[str, Any]:
   "side_by_side" (مستطيلان طوليان متجاوران) أو "stacked" (فوق بعض).
 - three_panel: ثلاث صور مفيدة: مستطيل طولي كبير للأهم ومربعان بجانبه.
   main_side: "left" أو "right".
-- four_grid: أربع صور مفيدة في شبكة 2×2.
+{four_grid_rule}
 لا تختر تخطيطًا يحتاج صورًا أكثر من التي ذكرتها في "images".
 
 أعد JSON صالحًا فقط:
