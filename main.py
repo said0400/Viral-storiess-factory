@@ -29,28 +29,15 @@ IMAGE_GUTTER = 12
 MAX_PAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGES = 4
-MAX_IMAGE_ATTEMPTS = 14
-
+MAX_IMAGE_ATTEMPTS = 20
 MIN_IMAGE_WIDTH = 400
 MIN_IMAGE_HEIGHT = 300
-
 REQUEST_TIMEOUT = 30
-MAX_REDIRECTS = 5
 
 JUNK_IMAGE_HINTS = (
-    "logo",
-    "icon",
-    "avatar",
-    "sprite",
-    "pixel",
-    "tracking",
-    "spacer",
-    "placeholder",
-    "banner-ad",
-    "/ads/",
-    "advert",
-    "emoji",
-    "gravatar",
+    "logo", "icon", "avatar", "sprite", "pixel", "tracking",
+    "spacer", "placeholder", "banner-ad", "/ads/", "advert",
+    "emoji", "gravatar",
 )
 
 USER_AGENT = (
@@ -71,12 +58,13 @@ SESSION.headers.update(
 )
 
 
-class ProjectError(Exception):
-    """خطأ متوقع يمكن عرضه للمستخدم بصورة واضحة."""
+class ProjectError(RuntimeError):
+    """خطأ متوقع برسالة واضحة للمستخدم."""
 
 
 def validate_public_url(url: str) -> str:
-    """التحقق من أن الرابط HTTP(S) ويشير إلى عنوان IP عام."""
+    """قبول HTTP(S) فقط ورفض أسماء المضيفين وعناوين IP غير العامة."""
+
     if not isinstance(url, str) or not url.strip():
         raise ProjectError("رابط المقال فارغ.")
 
@@ -87,7 +75,7 @@ def validate_public_url(url: str) -> str:
         hostname = parsed.hostname
         port = parsed.port
     except ValueError as exc:
-        raise ProjectError("الرابط أو رقم المنفذ غير صالح.") from exc
+        raise ProjectError("الرابط غير صالح.") from exc
 
     if parsed.scheme.lower() not in ("http", "https"):
         raise ProjectError("الرابط يجب أن يبدأ بـ http:// أو https://.")
@@ -96,41 +84,45 @@ def validate_public_url(url: str) -> str:
         raise ProjectError("الرابط لا يحتوي على اسم موقع صالح.")
 
     if parsed.username or parsed.password:
-        raise ProjectError("الروابط التي تحتوي على بيانات دخول غير مسموحة.")
+        raise ProjectError("الروابط التي تحتوي على بيانات دخول مرفوضة.")
 
     hostname = hostname.rstrip(".").lower()
 
-    if hostname in {"localhost", "localhost.localdomain"}:
+    if hostname in {
+        "localhost",
+        "localhost.localdomain",
+    } or hostname.endswith(".localhost"):
         raise ProjectError("لا يمكن استخدام عنوان محلي.")
 
-    effective_port = port or (443 if parsed.scheme.lower() == "https" else 80)
+    port = port or (443 if parsed.scheme.lower() == "https" else 80)
 
     try:
-        addresses = socket.getaddrinfo(
-            hostname,
-            effective_port,
-            type=socket.SOCK_STREAM,
-        )
-    except (socket.gaierror, OSError) as exc:
+        # عناوين IP المكتوبة مباشرة لا تحتاج إلى DNS.
+        try:
+            literal_ip = ipaddress.ip_address(hostname)
+            addresses = [literal_ip]
+        except ValueError:
+            answers = socket.getaddrinfo(
+                hostname,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+            addresses = [
+                ipaddress.ip_address(answer[4][0].split("%")[0])
+                for answer in answers
+            ]
+    except (OSError, ValueError) as exc:
         raise ProjectError(
-            f"تعذر العثور على خادم الرابط: {hostname}"
+            f"تعذر التحقق من عنوان الموقع: {hostname}"
         ) from exc
 
     if not addresses:
         raise ProjectError("لم يتم العثور على عنوان IP للموقع.")
 
-    for address in addresses:
-        raw_ip = address[4][0].split("%")[0]
-
-        try:
-            ip = ipaddress.ip_address(raw_ip)
-        except ValueError as exc:
-            raise ProjectError("عنوان IP غير صالح للموقع.") from exc
-
-        if not ip.is_global:
-            raise ProjectError(
-                "تم رفض الرابط لأنه يشير إلى عنوان IP غير عام."
-            )
+    if any(not address.is_global for address in addresses):
+        raise ProjectError(
+            "تم رفض الرابط لأنه يشير إلى عنوان IP غير عام."
+        )
 
     return url
 
@@ -139,14 +131,13 @@ def safe_get(
     url: str,
     max_bytes: int,
     expected_image: bool = False,
-):
-    """تنزيل محتوى مع فحص الرابط وكل وجهة تحويل وحدود الحجم."""
+) -> tuple[str, str, bytes]:
+    """تنزيل محدود الحجم مع التحقق من وجهات التحويل."""
+
     current_url = url
 
-    for redirect_number in range(MAX_REDIRECTS + 1):
+    for _ in range(6):
         current_url = validate_public_url(current_url)
-
-        response = None
 
         try:
             response = SESSION.get(
@@ -155,54 +146,56 @@ def safe_get(
                 allow_redirects=False,
                 stream=True,
             )
+        except requests.RequestException as exc:
+            raise ProjectError(
+                f"تعذر الاتصال بالموقع: {exc}"
+            ) from exc
 
-            if response.is_redirect or response.is_permanent_redirect:
-                location = response.headers.get("Location")
+        if response.is_redirect or response.is_permanent_redirect:
+            location = response.headers.get("Location")
+            response.close()
 
-                if not location:
-                    raise ProjectError(
-                        "تحويل الرابط لا يحتوي على وجهة."
-                    )
+            if not location:
+                raise ProjectError("تحويل الرابط بلا وجهة.")
 
-                if redirect_number >= MAX_REDIRECTS:
-                    raise ProjectError(
-                        "تجاوز الرابط عدد التحويلات المسموح به."
-                    )
+            current_url = urljoin(current_url, location)
+            continue
 
-                current_url = urljoin(current_url, location)
-                continue
+        if not 200 <= response.status_code < 300:
+            status = response.status_code
+            response.close()
 
-            if not 200 <= response.status_code < 300:
-                status = response.status_code
-                hint = ""
+            hint = (
+                " قد يمنع الموقع الوصول الآلي."
+                if status in (401, 403, 429)
+                else ""
+            )
 
-                if status in (401, 403, 429):
-                    hint = " قد يمنع الموقع الوصول الآلي."
+            raise ProjectError(
+                f"أعاد الموقع HTTP {status}.{hint}"
+            )
 
-                raise ProjectError(
-                    f"أعاد الموقع رمز HTTP {status}.{hint}"
-                )
+        content_type = response.headers.get(
+            "Content-Type", ""
+        ).lower()
 
-            content_type = response.headers.get(
-                "Content-Type", ""
-            ).lower()
+        if expected_image and not content_type.startswith("image/"):
+            response.close()
+            raise ProjectError("الرابط لا يعيد نوع ملف صورة.")
 
-            if expected_image and not content_type.startswith("image/"):
-                raise ProjectError("الرابط لا يعيد ملف صورة.")
+        declared_size = response.headers.get("Content-Length")
 
-            content_length = response.headers.get("Content-Length")
+        if declared_size:
+            try:
+                if int(declared_size) > max_bytes:
+                    response.close()
+                    raise ProjectError("حجم الملف يتجاوز الحد المسموح.")
+            except ValueError:
+                pass
 
-            if content_length:
-                try:
-                    if int(content_length) > max_bytes:
-                        raise ProjectError(
-                            "حجم الملف أكبر من الحد المسموح."
-                        )
-                except ValueError:
-                    pass
+        data = bytearray()
 
-            data = bytearray()
-
+        try:
             for chunk in response.iter_content(chunk_size=65536):
                 if not chunk:
                     continue
@@ -211,57 +204,46 @@ def safe_get(
 
                 if len(data) > max_bytes:
                     raise ProjectError(
-                        "حجم الملف أكبر من الحد المسموح."
+                        "حجم الملف تجاوز الحد المسموح أثناء التنزيل."
                     )
-
-            return current_url, content_type, bytes(data)
-
         except requests.RequestException as exc:
             raise ProjectError(
-                f"فشل الاتصال أو تنزيل الملف: {exc}"
+                f"انقطع تنزيل الملف: {exc}"
             ) from exc
-
         finally:
-            if response is not None:
-                response.close()
+            response.close()
 
-    raise ProjectError("تعذر الوصول إلى الرابط بعد التحويلات.")
+        return current_url, content_type, bytes(data)
+
+    raise ProjectError("تجاوز الرابط عدد التحويلات المسموح به.")
 
 
 def clean_text(value: str | None) -> str:
     if not value:
         return ""
+
     return re.sub(r"\s+", " ", value).strip()
 
 
 def decode_html(html_bytes: bytes, content_type: str) -> str:
-    """دعم ترميزات HTML المختلفة، بما فيها بعض الترميزات العربية القديمة."""
-    match = re.search(
-        r"charset\s*=\s*[\"']?([\w.-]+)",
-        content_type or "",
-        flags=re.IGNORECASE,
-    )
-
+    match = re.search(r"charset=([\w\-]+)", content_type or "")
     declared = match.group(1) if match else None
 
-    try:
-        dammit = UnicodeDammit(
-            html_bytes,
-            known_definite_encodings=[declared] if declared else [],
-            is_html=True,
-        )
+    encodings = [declared] if declared else []
 
-        if dammit.unicode_markup:
-            return dammit.unicode_markup
+    dammit = UnicodeDammit(
+        html_bytes,
+        known_definite_encodings=encodings,
+        is_html=True,
+    )
 
-    except (LookupError, UnicodeError):
-        pass
+    if dammit.unicode_markup:
+        return dammit.unicode_markup
 
     return html_bytes.decode("utf-8", errors="replace")
 
 
 def extract_article(article_url: str) -> dict:
-    """استخراج عنوان المقال ونصه وروابط الصور من صفحة المصدر."""
     final_url, content_type, html_bytes = safe_get(
         article_url,
         max_bytes=MAX_PAGE_BYTES,
@@ -289,19 +271,14 @@ def extract_article(article_url: str) -> dict:
             if title:
                 break
 
+    if not title and soup.find("h1"):
+        title = clean_text(soup.find("h1").get_text(" ", strip=True))
+
     if not title and soup.title:
         title = clean_text(soup.title.get_text(" ", strip=True))
 
     if not title:
-        heading = soup.find("h1")
-
-        if heading:
-            title = clean_text(heading.get_text(" ", strip=True))
-
-    if not title:
-        raise ProjectError(
-            "لم يتم العثور على عنوان واضح للمقال."
-        )
+        title = "مقال بدون عنوان واضح"
 
     extracted = trafilatura.extract(
         html,
@@ -315,9 +292,9 @@ def extract_article(article_url: str) -> dict:
     article_text = clean_text(extracted or "")
 
     if len(article_text) < 200:
-        fallback_soup = BeautifulSoup(html, "html.parser")
+        fallback = BeautifulSoup(html, "html.parser")
 
-        for tag in fallback_soup(
+        for tag in fallback(
             ["script", "style", "noscript", "nav", "footer", "aside"]
         ):
             tag.decompose()
@@ -325,7 +302,7 @@ def extract_article(article_url: str) -> dict:
         candidates = []
 
         for selector in ("article", "main", '[role="main"]'):
-            candidates.extend(fallback_soup.select(selector))
+            candidates.extend(fallback.select(selector))
 
         if candidates:
             candidates.sort(
@@ -339,13 +316,13 @@ def extract_article(article_url: str) -> dict:
 
     if len(article_text) < 200:
         raise ProjectError(
-            "لم أتمكن من استخراج نص كافٍ من المقال. "
-            "قد يكون الموقع محميًا أو يحتاج إلى JavaScript أو تسجيل دخول."
+            "تعذر استخراج نص كافٍ. قد يكون الموقع محميًا أو يحتاج "
+            "إلى JavaScript أو تسجيل الدخول."
         )
 
     image_urls: list[str] = []
 
-    def add_image(candidate: str | None):
+    def add_image(candidate: str | None) -> None:
         if not isinstance(candidate, str):
             return
 
@@ -356,19 +333,12 @@ def extract_article(article_url: str) -> dict:
 
         absolute = urldefrag(urljoin(final_url, candidate))[0]
 
-        try:
-            parsed_image = urlparse(absolute)
+        parsed_image = urlparse(absolute)
 
-            if parsed_image.scheme.lower() not in ("http", "https"):
-                return
-
-            # فحص أمني مبكر؛ يُعاد الفحص قبل التنزيل أيضًا.
-            validate_public_url(absolute)
-
-        except (ProjectError, ValueError):
+        if parsed_image.scheme not in ("http", "https"):
             return
 
-        lowered = parsed_image.path.lower()
+        lowered = absolute.lower()
 
         if any(hint in lowered for hint in JUNK_IMAGE_HINTS):
             return
@@ -376,7 +346,7 @@ def extract_article(article_url: str) -> dict:
         if absolute not in image_urls:
             image_urls.append(absolute)
 
-    # الصورة الرئيسية المعلنة في بيانات الصفحة.
+    # الصور الرئيسية المعلنة، ثم الصور الموجودة داخل المقال.
     for selector in (
         'meta[property="og:image"]',
         'meta[name="twitter:image"]',
@@ -386,32 +356,31 @@ def extract_article(article_url: str) -> dict:
         if node:
             add_image(node.get("content"))
 
-    def collect_from(selectors):
-        found = []
-        seen_ids = set()
+    nodes = []
 
-        for selector in selectors:
-            for node in soup.select(selector):
-                if id(node) not in seen_ids:
-                    seen_ids.add(id(node))
-                    found.append(node)
+    for selector in ("article img", "main img", '[role="main"] img'):
+        nodes.extend(soup.select(selector))
 
-        return found
+    if not nodes:
+        nodes = soup.select("img")
 
-    image_nodes = collect_from(
-        ("article img", "main img", '[role="main"] img')
-    )
+    seen_nodes = set()
 
-    if not image_nodes:
-        image_nodes = collect_from(("img",))
+    for node in nodes:
+        identity = id(node)
 
-    for node in image_nodes:
-        candidates = [
-            node.get("src"),
-            node.get("data-src"),
-            node.get("data-lazy-src"),
-            node.get("data-original"),
-        ]
+        if identity in seen_nodes:
+            continue
+
+        seen_nodes.add(identity)
+
+        for attribute in (
+            "src",
+            "data-src",
+            "data-lazy-src",
+            "data-original",
+        ):
+            add_image(node.get(attribute))
 
         srcset = node.get("srcset") or node.get("data-srcset")
 
@@ -422,22 +391,25 @@ def extract_article(article_url: str) -> dict:
                 if item.strip()
             ]
 
-            if entries:
-                candidates.append(entries[-1])
+            # الأفضلية لأكبر عرض معلن، مع دعم srcset القياسي.
+            def srcset_width(entry: str) -> int:
+                match = re.search(r"\s+(\d+)w$", entry)
+                return int(match.group(1)) if match else 0
 
-        for candidate in candidates:
-            add_image(candidate)
+            entries.sort(key=srcset_width, reverse=True)
+
+            for entry in entries:
+                add_image(entry)
 
     return {
         "source_url": final_url,
         "title": title,
         "text": article_text,
-        "image_urls": image_urls[:30],
+        "image_urls": image_urls[:40],
     }
 
 
 def average_hash(image: Image.Image) -> int:
-    """بصمة بسيطة للمساعدة على اكتشاف الصور المتشابهة."""
     small = image.convert("L").resize(
         (8, 8),
         Image.Resampling.LANCZOS,
@@ -445,36 +417,30 @@ def average_hash(image: Image.Image) -> int:
 
     pixels = list(small.getdata())
     mean = sum(pixels) / len(pixels)
-
-    value = 0
+    result = 0
 
     for pixel in pixels:
-        value = (value << 1) | int(pixel >= mean)
+        result = (result << 1) | int(pixel >= mean)
 
-    return value
+    return result
 
 
-def is_duplicate(hash_value: int, known: list[int]) -> bool:
+def is_duplicate(value: int, known: list[int]) -> bool:
     return any(
-        bin(hash_value ^ other).count("1") <= 5
+        (value ^ other).bit_count() <= 5
         for other in known
     )
 
 
-def download_article_images(image_urls: list[str]):
-    """تنزيل الصور الصالحة واستبعاد المكررة والصغيرة."""
-    collected = []
+def download_article_images(
+    image_urls: list[str],
+) -> list[tuple[str, Image.Image]]:
+    collected: list[tuple[str, Image.Image]] = []
     hashes: list[int] = []
-    attempts = 0
 
-    for image_url in image_urls:
-        if len(collected) >= MAX_IMAGES + 4:
+    for image_url in image_urls[:MAX_IMAGE_ATTEMPTS]:
+        if len(collected) >= MAX_IMAGES:
             break
-
-        if attempts >= MAX_IMAGE_ATTEMPTS:
-            break
-
-        attempts += 1
 
         try:
             _, _, data = safe_get(
@@ -484,6 +450,9 @@ def download_article_images(image_urls: list[str]):
             )
 
             with Image.open(BytesIO(data)) as source:
+                if getattr(source, "is_animated", False):
+                    source.seek(0)
+
                 source.verify()
 
             with Image.open(BytesIO(data)) as source:
@@ -494,9 +463,7 @@ def download_article_images(image_urls: list[str]):
             if width < MIN_IMAGE_WIDTH or height < MIN_IMAGE_HEIGHT:
                 continue
 
-            ratio = width / height
-
-            if ratio > 3.0 or ratio < 0.33:
+            if width / height > 3.0 or width / height < 0.33:
                 continue
 
             digest = average_hash(image)
@@ -515,83 +482,72 @@ def download_article_images(image_urls: list[str]):
             OSError,
             ValueError,
         ) as exc:
-            print(f"تحذير: تم تخطي صورة: {exc}")
+            print(f"تحذير: تخطي صورة غير صالحة: {exc}")
             continue
 
     if not collected:
         return []
 
-    # نحافظ على أول صورة صالحة بوصفها الصورة الرئيسية.
-    main_item = collected[0]
-    rest = collected[1:]
-
-    rest.sort(
-        key=lambda item: item[1].width * item[1].height,
-        reverse=True,
-    )
-
-    return [main_item] + rest[: MAX_IMAGES - 1]
+    # نحتفظ بترتيب الصور المصدرية حتى لا تتغير هوية الصورة الرئيسية.
+    return collected[:MAX_IMAGES]
 
 
 def crop_to_box(
     image: Image.Image,
     box: tuple[int, int, int, int],
 ) -> Image.Image:
-    """قص الصورة لتملأ المساحة المحددة دون تشويه أبعادها."""
     x1, y1, x2, y2 = box
-
-    width = x2 - x1
-    height = y2 - y1
 
     return ImageOps.fit(
         image,
-        (width, height),
+        (x2 - x1, y2 - y1),
         method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.35),
+        centering=(0.5, 0.4),
     )
 
 
 def create_collage(
     images: list[Image.Image],
     destination: Path,
-):
-    """إنشاء تصميم مربع من صورة إلى أربع صور دون كتابة نصوص."""
+) -> Path:
+    """إنشاء تصميم مربع من صورة إلى أربع صور، بلا كتابة أو شعارات."""
+
     if not images:
         raise ProjectError(
-            "لم يتم العثور على صور صالحة لإنشاء التصميم."
+            "لم يتم العثور على صور صالحة في المقال."
         )
+
+    images = images[:MAX_IMAGES]
 
     canvas = Image.new(
         "RGB",
         (IMAGE_SIZE, IMAGE_SIZE),
-        (255, 255, 255),
+        (18, 18, 18),
     )
 
     gap = IMAGE_GUTTER
     half = (IMAGE_SIZE - gap) // 2
 
     if len(images) == 1:
-        boxes = [
-            (0, 0, IMAGE_SIZE, IMAGE_SIZE),
-        ]
+        boxes = [(0, 0, IMAGE_SIZE, IMAGE_SIZE)]
 
     elif len(images) == 2:
         boxes = [
-            (0, 0, IMAGE_SIZE, half),
-            (0, half + gap, IMAGE_SIZE, IMAGE_SIZE),
+            (0, 0, half, IMAGE_SIZE),
+            (half + gap, 0, IMAGE_SIZE, IMAGE_SIZE),
         ]
 
     elif len(images) == 3:
         boxes = [
-            (half + gap, 0, IMAGE_SIZE, half),
             (0, 0, half, IMAGE_SIZE),
+            (half + gap, 0, IMAGE_SIZE, half),
             (half + gap, half + gap, IMAGE_SIZE, IMAGE_SIZE),
         ]
 
     else:
         boxes = [
-            (half + gap, 0, IMAGE_SIZE, half),
             (0, 0, half, half),
+            (half + gap, 0, IMAGE_SIZE, half),
             (0, half + gap, half, IMAGE_SIZE),
             (half + gap, half + gap, IMAGE_SIZE, IMAGE_SIZE),
         ]
@@ -600,24 +556,21 @@ def create_collage(
         tile = crop_to_box(image, box)
         canvas.paste(tile, (box[0], box[1]))
 
-    destination.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
 
     canvas.save(
         destination,
-        "JPEG",
+        format="JPEG",
         quality=92,
         optimize=True,
+        progressive=True,
     )
 
     return destination
 
 
-def write_text_file(path: Path, content: str):
+def write_text_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-
     path.write_text(
         content.rstrip() + "\n",
         encoding="utf-8",
@@ -625,32 +578,21 @@ def write_text_file(path: Path, content: str):
 
 
 def output_folder_for(url: str) -> Path:
-    """إنشاء مجلد ثابت لكل رابط مقال."""
-    digest = hashlib.sha256(
-        url.encode("utf-8")
-    ).hexdigest()[:12]
-
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
     return OUTPUT_ROOT / digest
 
 
-def main():
+def main() -> None:
     article_url = os.getenv("ARTICLE_URL", "").strip()
 
-    force = os.getenv(
-        "FORCE_REPROCESS", ""
-    ).strip().lower() in {
-        "1",
-        "true",
-        "yes",
+    force = os.getenv("FORCE_REPROCESS", "").strip().lower() in {
+        "1", "true", "yes",
     }
 
     if not article_url:
-        raise ProjectError(
-            "لم يتم إدخال رابط المقال. "
-            "شغّل workflow يدويًا وأدخل ARTICLE_URL."
-        )
+        raise ProjectError("لم يتم إدخال رابط المقال.")
 
-    # التحقق من الرابط قبل استخدامه في تحديد مجلد الإخراج.
+    # توحيد الرابط قبل احتساب بصمة المجلد.
     article_url = validate_public_url(article_url)
     out_dir = output_folder_for(article_url)
 
@@ -661,45 +603,40 @@ def main():
         )
         return
 
-    print("1/5: استخراج المقال...")
+    print("1/5: استخراج نص المقال والصور...")
     article = extract_article(article_url)
 
     print(f"العنوان الأصلي: {article['title']}")
-    print(f"عدد أحرف المقال: {len(article['text'])}")
+    print(f"طول النص: {len(article['text'])} حرف")
     print(f"روابط الصور المكتشفة: {len(article['image_urls'])}")
 
-    print("2/5: إعادة صياغة المقال باستخدام Grok...")
+    print("2/5: إعادة صياغة المقال عبر GroqCloud...")
     rewritten = rewrite_article(
         article_title=article["title"],
         article_text=article["text"],
         source_url=article["source_url"],
     )
 
-    print("3/5: تنزيل الصور...")
+    print("3/5: تنزيل الصور والتحقق منها...")
     selected = download_article_images(article["image_urls"])
-
     images = [image for _, image in selected]
     used_urls = [url for url, _ in selected]
 
-    print(f"عدد الصور المختارة: {len(images)}")
+    print(f"عدد الصور الصالحة: {len(images)}")
 
-    print("4/5: إنشاء التصميم المربع...")
+    print("4/5: إنشاء صورة فيسبوك مربعة...")
     image_file = None
     image_note = ""
 
     try:
-        create_collage(
-            images,
-            out_dir / "facebook_image.jpg",
-        )
-
+        create_collage(images, out_dir / "facebook_image.jpg")
         image_file = "facebook_image.jpg"
 
     except ProjectError as exc:
         image_note = str(exc)
         print(f"تحذير: {image_note}")
 
-    print("5/5: حفظ النتائج...")
+    print("5/5: حفظ المقال والمنشور والبيانات...")
     hashtags_text = " ".join(rewritten["hashtags"])
 
     post_parts = [
@@ -710,31 +647,27 @@ def main():
     if hashtags_text:
         post_parts.append(hashtags_text)
 
-    post_parts.append(
-        f"المصدر: {article['source_url']}"
-    )
+    post_parts.append(f"المصدر: {article['source_url']}")
 
     write_text_file(
         out_dir / "facebook_post.txt",
         "\n\n".join(post_parts),
     )
 
-    rewritten_markdown = (
+    markdown = (
         f"# {rewritten['title']}\n\n"
-        f"**رابط المقال الأصلي:** {article['source_url']}\n\n"
-        "---\n\n"
+        f"**المصدر الأصلي:** {article['source_url']}\n\n"
+        f"---\n\n"
         f"{rewritten['rewritten_article']}\n"
     )
 
     write_text_file(
         out_dir / "rewritten_article.md",
-        rewritten_markdown,
+        markdown,
     )
 
     result = {
-        "generated_at_utc": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_url": article["source_url"],
         "original_title": article["title"],
         "title": rewritten["title"],
@@ -745,31 +678,32 @@ def main():
         "image_count": len(images),
         "image_source_urls": used_urls,
         "image_note": image_note,
-        "note": (
-            "تحقق من حقوق استخدام الصور قبل نشرها. "
-            "وجود الصورة في صفحة المصدر لا يمنح تلقائيًا حق إعادة نشرها. "
-            "المحتوى المعاد صياغته لم يخضع لتحقق مستقل من الوقائع."
+        "rights_notice": (
+            "تحقق من ترخيص كل صورة وحق إعادة نشرها قبل استخدامها. "
+            "وجود الصورة على الموقع الأصلي لا يمنح تلقائيًا حق استخدامها."
+        ),
+        "verification_notice": (
+            "تمت إعادة الصياغة من النص المستخرج، ولم يحدث تحقق مستقل "
+            "من الوقائع."
         ),
     }
 
-    write_text_file(
-        out_dir / "result.json",
-        json.dumps(
-            result,
-            ensure_ascii=False,
-            indent=2,
-        ),
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    (out_dir / "result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
 
-    print("\nاكتمل إنشاء المحتوى.")
+    print(f"\nاكتمل التشغيل: {out_dir}")
 
-    for name in (
+    for filename in (
         "facebook_image.jpg",
         "facebook_post.txt",
         "rewritten_article.md",
         "result.json",
     ):
-        path = out_dir / name
+        path = out_dir / filename
 
         if path.exists():
             print(f"- {path}")
@@ -780,17 +714,11 @@ if __name__ == "__main__":
         main()
 
     except (ProjectError, GrokError) as exc:
-        print(
-            f"\nخطأ: {exc}",
-            file=sys.stderr,
-        )
+        print(f"\nخطأ: {exc}", file=sys.stderr)
         sys.exit(1)
 
     except KeyboardInterrupt:
-        print(
-            "\nتم إيقاف التشغيل.",
-            file=sys.stderr,
-        )
+        print("\nتم إيقاف التشغيل.", file=sys.stderr)
         sys.exit(130)
 
     except Exception as exc:
