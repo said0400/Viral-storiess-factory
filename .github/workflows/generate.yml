@@ -1,4 +1,4 @@
-
+```yaml
 name: Viral Content Factory
 
 on:
@@ -41,17 +41,19 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
       - name: Validate required secret
         env:
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         shell: bash
         run: |
-          if [[ -z "${XAI_API_KEY:-}" ]]; then
-            echo "::error::Missing XAI_API_KEY GitHub secret."
+          if [[ -z "${GROQ_API_KEY:-}" ]]; then
+            echo "::error::Missing GROQ_API_KEY GitHub secret."
             exit 1
           fi
 
@@ -87,16 +89,20 @@ jobs:
         env:
           ARTICLE_URL: ${{ inputs.article_url }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-          GROK_MODEL: ${{ vars.GROK_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
+        shell: bash
         run: |
+          set -euo pipefail
           python main.py
 
       - name: Verify generated output
         shell: bash
         run: |
+          set -euo pipefail
+
           if [[ ! -d output ]]; then
             echo "::error::The output directory was not created."
             exit 1
@@ -125,7 +131,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Add new, modified, and deleted files under output/.
           git add -A -- output/
 
           if git diff --cached --quiet; then
@@ -135,9 +140,8 @@ jobs:
 
           git commit -m "Generate article content"
 
-          # Rebase the generated commit onto the latest remote branch.
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
 
-          # Push explicitly to the branch used for this workflow run.
           git push origin "HEAD:refs/heads/$BRANCH"
+```
