@@ -24,9 +24,9 @@ concurrency:
 
 jobs:
   generate:
-    name: Generate Arabic Article and Facebook Image
+    name: Create Arabic Content and Smart Image
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -51,20 +51,13 @@ jobs:
       - name: Validate Groq configuration
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ -z "${GROQ_API_KEY:-}" ]]; then
-            echo "::error::Missing GROQ_API_KEY GitHub secret."
+            echo "::error::Missing GROQ_API_KEY in repository secrets."
             exit 1
-          fi
-
-          if [[ -n "${GROQ_MODEL:-}" ]]; then
-            echo "A custom Groq model has been configured."
-          else
-            echo "Using the default model configured in grok.py."
           fi
 
       - name: Validate article URL
@@ -78,10 +71,10 @@ jobs:
           import os
           from urllib.parse import urlsplit
 
-          raw_url = os.environ.get("ARTICLE_URL", "").strip()
+          raw = os.environ.get("ARTICLE_URL", "").strip()
 
           try:
-              parsed = urlsplit(raw_url)
+              parsed = urlsplit(raw)
               valid = (
                   parsed.scheme.lower() in ("http", "https")
                   and bool(parsed.hostname)
@@ -94,16 +87,17 @@ jobs:
 
           if not valid:
               raise SystemExit(
-                  "::error::Provide a valid public HTTP(S) article URL."
+                  "::error::Enter a valid HTTP(S) article URL."
               )
           PY
 
-      - name: Generate article and image
+      - name: Generate content and smart image
         env:
           ARTICLE_URL: ${{ inputs.article_url }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          GROQ_VISION_MODEL: ${{ vars.GROQ_VISION_MODEL }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
         shell: bash
@@ -111,20 +105,15 @@ jobs:
           set -euo pipefail
           python main.py
 
-      - name: Verify generated files
+      - name: Validate generated results
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ ! -d output ]]; then
-            echo "::error::The output directory was not created."
-            exit 1
-          fi
-
           RESULT_FILE="$(find output -type f -name result.json -print -quit)"
 
           if [[ -z "$RESULT_FILE" ]]; then
-            echo "::error::No result.json was generated."
+            echo "::error::result.json was not generated."
             exit 1
           fi
 
@@ -136,7 +125,7 @@ jobs:
             "result.json"
           do
             if [[ ! -s "$RESULT_DIR/$FILE" ]]; then
-              echo "::error::Missing or empty output: $FILE"
+              echo "::error::Missing or empty file: $FILE"
               exit 1
             fi
           done
@@ -146,64 +135,61 @@ jobs:
           import sys
           from pathlib import Path
 
-          result_path = Path(sys.argv[1])
+          path = Path(sys.argv[1])
 
           try:
-              data = json.loads(result_path.read_text(encoding="utf-8"))
+              data = json.loads(path.read_text(encoding="utf-8"))
           except (OSError, ValueError) as exc:
               raise SystemExit(f"::error::Invalid result.json: {exc}")
 
-          required = (
+          for key in (
               "source_url",
               "title",
               "rewritten_article",
               "facebook_post",
               "hashtags",
-          )
-
-          for key in required:
+          ):
               if key not in data:
-                  raise SystemExit(
-                      f"::error::Missing field in result.json: {key}"
-                  )
+                  raise SystemExit(f"::error::Missing field: {key}")
 
           image_name = data.get("image_file")
 
           if image_name:
-              image_path = result_path.parent / image_name
+              if Path(image_name).name != image_name:
+                  raise SystemExit("::error::Invalid image filename.")
+
+              image_path = path.parent / image_name
 
               if not image_path.is_file() or image_path.stat().st_size == 0:
-                  raise SystemExit(
-                      "::error::The image listed in result.json is missing."
-                  )
+                  raise SystemExit("::error::Image file is missing.")
           else:
               print(
-                  "::warning::No article image was generated. "
-                  "Text outputs are available."
+                  "::warning::No image was produced. "
+                  "The text package is still available."
               )
 
-          print("Output validation completed.")
+          print("Result files validated.")
           PY
 
       - name: Upload content package
         uses: actions/upload-artifact@v4
         with:
-          name: content-package
+          name: viral-content-package
           path: output/
           if-no-files-found: error
           retention-days: 14
 
-      - name: Commit generated files
+      - name: Commit generated output
         shell: bash
         run: |
           set -euo pipefail
 
-          BRANCH="${GITHUB_REF_NAME}"
-
           if [[ "$GITHUB_REF" != refs/heads/* ]]; then
-            echo "::error::Run this workflow from a branch, not a tag."
+            echo "::error::Run this workflow from a branch."
             exit 1
           fi
+
+          BRANCH="$GITHUB_REF_NAME"
 
           git config user.name "github-actions[bot]"
           git config user.email \
@@ -212,11 +198,11 @@ jobs:
           git add -A -- output/
 
           if git diff --cached --quiet; then
-            echo "No output changes to commit."
+            echo "No new output changes to commit."
             exit 0
           fi
 
-          git commit -m "Generate article content"
+          git commit -m "Generate viral content package"
 
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
