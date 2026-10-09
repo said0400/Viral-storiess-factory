@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -15,11 +16,19 @@ from urllib.parse import urljoin, urlparse, urldefrag
 import requests
 import trafilatura
 from bs4 import BeautifulSoup, UnicodeDammit
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    ARABIC_TEXT_OK = True
+except ImportError:  # يُتخطى النص على الصورة مع تحذير
+    ARABIC_TEXT_OK = False
 from PIL import (
     Image,
     ImageDraw,
     ImageEnhance,
     ImageFilter,
+    ImageFont,
     ImageOps,
     ImageStat,
     UnidentifiedImageError,
@@ -40,6 +49,12 @@ IMAGE_SIZE = 1080
 SS = 2                      # دقة مضاعفة لنعومة الحواف
 GUTTER = 10
 GUTTER_COLOR = "#FFFFFF"
+
+FONT_FILENAME = "IBMPlexSansArabic-Bold.ttf"
+FONT_FALLBACKS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+TEXT_ACCENT = "#FFD400"
 MAX_PAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTEMPTS = 14
@@ -496,12 +511,26 @@ def choose_anchor(image, item, aspect):
     return item.get("detail_box") or sb
 
 
-def paste_tile(canvas, image, item, box):
+def paste_tile(canvas, image, item, box, keep=None):
     x0, y0, x1, y1 = box
     w, h = x1 - x0, y1 - y0
     anchor = choose_anchor(image, item, w / h)
     win = smart_window(image, anchor, w / h, "cover")
     canvas.paste(polish(crop_window(image, win, (w, h))), (x0, y0))
+
+    if keep is not None:
+        W, H = image.size
+        ww, wh = win[2] - win[0], win[3] - win[1]
+        for b in item.get("avoid_boxes", []):
+            keep.append((
+                (
+                    x0 + (b[0] * W - win[0]) / ww * w,
+                    y0 + (b[1] * H - win[1]) / wh * h,
+                    x0 + (b[2] * W - win[0]) / ww * w,
+                    y0 + (b[3] * H - win[1]) / wh * h,
+                ),
+                6.0,
+            ))
 
 
 def paste_inset(canvas, tile, x, y, shape, border):
@@ -578,7 +607,7 @@ def pick_detail(image, item, mw):
     return None, None
 
 
-def build_single(canvas, images, plan):
+def build_single(canvas, images, plan, keep=None):
     size = canvas.width
     item = plan["images"][0]
     img = images[item["index"]]
@@ -593,6 +622,18 @@ def build_single(canvas, images, plan):
     canvas.paste(
         polish(crop_window(img, main_win, (size, size))), (0, 0)
     )
+
+    if keep is not None:
+        for b in item.get("avoid_boxes", []):
+            keep.append((
+                (
+                    (b[0] * W - mx0) / mw * size,
+                    (b[1] * H - my0) / mw * size,
+                    (b[2] * W - mx0) / mw * size,
+                    (b[3] * H - my0) / mw * size,
+                ),
+                6.0,
+            ))
 
     # 2) نافذة التفصيل
     dwin, d_frac = pick_detail(img, item, mw)
@@ -670,6 +711,7 @@ def build_single(canvas, images, plan):
                 ring_cx + ring_r, ring_cy + ring_r,
             )
             + 1.0 * edge_density(px, py)
+            + (0.6 if py > size / 2 else 0.0)
             - 0.2 * dist / size
         )
 
@@ -699,6 +741,14 @@ def build_single(canvas, images, plan):
         )
 
     paste_inset(canvas, detail, x, y, plan["inset_shape"], 8 * SS)
+
+    if keep is not None:
+        keep.append(((x, y, x + d, y + d), 5.0))
+        keep.append((
+            (ring_cx - ring_r, ring_cy - ring_r,
+             ring_cx + ring_r, ring_cy + ring_r),
+            2.0,
+        ))
 
 
 def build_asis(canvas, images, plan):
@@ -764,7 +814,7 @@ def panel_score(images, plan, boxes):
     )
 
 
-def build_panels(canvas, images, plan):
+def build_panels(canvas, images, plan, keep=None):
     size = canvas.width
     g = GUTTER * SS
     layout = plan["layout"]
@@ -806,10 +856,181 @@ def build_panels(canvas, images, plan):
         ]
 
     for item, box in zip(plan["images"], boxes):
-        paste_tile(canvas, images[item["index"]], item, box)
+        paste_tile(canvas, images[item["index"]], item, box, keep)
 
 
-def create_design(images, plan, destination: Path):
+def find_font_path():
+    candidates = [os.getenv("FONT_PATH", "").strip()]
+    here = Path(__file__).resolve().parent
+    candidates += [
+        here / "fonts" / FONT_FILENAME,
+        Path("fonts") / FONT_FILENAME,
+        *FONT_FALLBACKS,
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    return None
+
+
+def clean_headline(text):
+    """يزيل الرموز التعبيرية والهاشتاغات وعلامات الاقتباس الزائدة."""
+    text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]", "", text or "")
+    text = text.replace("#", " ").replace("«", "").replace("»", "")
+    text = text.replace('"', "").replace("“", "").replace("”", "")
+    text = "".join(
+        ch for ch in text
+        if not unicodedata.category(ch).startswith("C") or ch == " "
+    )
+    return clean_text(text)
+
+
+def shape_word(word):
+    return get_display(arabic_reshaper.reshape(word), base_dir="R")
+
+
+def layout_headline(words, font_path, width):
+    """يفضّل سطرين بخط كبير، وإن لم يتسع فثلاثة أسطر بخط أصغر."""
+    max_w = width * 0.88
+    shaped = [shape_word(w) for w in words]
+    result = None
+
+    for max_lines, min_frac in ((2, 0.062), (3, 0.048)):
+        for size in range(int(width * 0.095), int(width * min_frac) - 1, -4):
+            font = ImageFont.truetype(
+                font_path, size, layout_engine=ImageFont.Layout.BASIC
+            )
+            space = font.getlength(" ") + size * 0.10
+            widths = [font.getlength(s) for s in shaped]
+
+            lines, line_widths = [], []
+            cur, cur_w = [], 0.0
+            for i, wd in enumerate(widths):
+                add = wd if not cur else space + wd
+                if cur and cur_w + add > max_w:
+                    lines.append(cur)
+                    line_widths.append(cur_w)
+                    cur, cur_w = [i], wd
+                else:
+                    cur.append(i)
+                    cur_w += add
+            if cur:
+                lines.append(cur)
+                line_widths.append(cur_w)
+
+            result = {
+                "font": font, "size": size, "space": space,
+                "shaped": shaped, "widths": widths,
+                "lines": lines, "line_widths": line_widths,
+            }
+            if len(lines) <= max_lines and max(line_widths) <= max_w:
+                return result
+
+    return result
+
+
+def zone_penalty(zone, keep):
+    zx0, zy0, zx1, zy1 = zone
+    total = 0.0
+    for (bx0, by0, bx1, by1), weight in keep:
+        area = max(1.0, (bx1 - bx0) * (by1 - by0))
+        ow = max(0.0, min(zx1, bx1) - max(zx0, bx0))
+        oh = max(0.0, min(zy1, by1) - max(zy0, by0))
+        total += weight * ow * oh / area
+    return total
+
+
+def add_headline(canvas, headline, highlight, keep):
+    """يكتب عبارة عربية على الصورة في الأعلى أو الأسفل حسب الأقل تغطية."""
+    if not ARABIC_TEXT_OK:
+        print("::warning title=النص العربي::مكتبتا arabic-reshaper و "
+              "python-bidi غير مثبتتين؛ تُخطي الكتابة على الصورة.")
+        return None
+
+    font_path = find_font_path()
+    if not font_path:
+        print("::warning title=النص العربي::لم يُعثر على خط عربي؛ "
+              "تُخطي الكتابة على الصورة.")
+        return None
+
+    words = clean_headline(headline).split()[:12]
+    if not words:
+        return None
+
+    W, H = canvas.size
+    lay = layout_headline(words, font_path, W)
+    if lay is None:
+        return None
+
+    size = lay["size"]
+    line_h = int(size * 1.28)
+    pad = int(size * 0.55)
+    n_lines = len(lay["lines"])
+    block_h = line_h * n_lines + pad * 2
+
+    zones = {
+        "bottom": (0, H - block_h, W, H),
+        "top": (0, 0, W, block_h),
+    }
+    zone_name = min(
+        ("bottom", "top"), key=lambda z: zone_penalty(zones[z], keep)
+    )
+    zx0, zy0, zx1, zy1 = zones[zone_name]
+
+    # تدرج داكن خلف النص لضمان الوضوح فوق أي صورة
+    gh = int(block_h * 1.5)
+    alpha = Image.linear_gradient("L").resize((W, gh))
+    alpha = alpha.point(lambda v: int(v * 0.88))
+    if zone_name == "bottom":
+        canvas.paste((0, 0, 0), (0, H - gh, W, H), alpha)
+    else:
+        canvas.paste((0, 0, 0), (0, 0, W, gh), ImageOps.flip(alpha))
+
+    draw = ImageDraw.Draw(canvas)
+
+    # شريط لوني قصير على الحافة الداخلية للنص
+    bar_w, bar_h = int(W * 0.14), max(6, int(size * 0.12))
+    bar_y = (
+        zy0 + pad - int(size * 0.30) - bar_h
+        if zone_name == "bottom"
+        else zy1 - pad + int(size * 0.30)
+    )
+    draw.rounded_rectangle(
+        ((W - bar_w) // 2, bar_y, (W + bar_w) // 2, bar_y + bar_h),
+        radius=bar_h // 2, fill=TEXT_ACCENT,
+    )
+
+    def norm(word):
+        return re.sub(r"[^\w]", "", word, flags=re.UNICODE)
+
+    marked = {norm(w) for w in clean_headline(highlight).split()} - {""}
+    stroke = max(3, size // 16)
+    y = zy0 + pad
+
+    for line, line_w in zip(lay["lines"], lay["line_widths"]):
+        x = (W + line_w) / 2           # الكتابة من اليمين إلى اليسار
+        for idx in line:
+            x -= lay["widths"][idx]
+            color = TEXT_ACCENT if norm(words[idx]) in marked else "white"
+            draw.text(
+                (x, y), lay["shaped"][idx], font=lay["font"], fill=color,
+                stroke_width=stroke, stroke_fill="black",
+            )
+            x -= lay["space"]
+        y += line_h
+
+    return {
+        "text": " ".join(words),
+        "zone": zone_name,
+        "font": Path(font_path).name,
+        "font_size": size,
+        "lines": n_lines,
+    }
+
+
+def create_design(
+    images, plan, destination: Path, headline=None, highlight=None
+):
     if not images:
         raise ProjectError("لا توجد صور صالحة للتصميم.")
 
@@ -842,16 +1063,29 @@ def create_design(images, plan, destination: Path):
 
     canvas = Image.new("RGB", (size, size), GUTTER_COLOR)
 
+    keep = []
     if plan["layout"] == "as_is":
         build_asis(canvas, images, plan)
     elif plan["layout"] == "single_inset" or len(plan["images"]) == 1:
-        build_single(canvas, images, plan)
+        build_single(canvas, images, plan, keep)
     else:
-        build_panels(canvas, images, plan)
+        build_panels(canvas, images, plan, keep)
 
     canvas = canvas.resize(
         (IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.LANCZOS
     )
+
+    text_enabled = os.getenv("ADD_IMAGE_TEXT", "").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    if headline and text_enabled:
+        scaled = [
+            (tuple(v / SS for v in box), weight) for box, weight in keep
+        ]
+        info = add_headline(canvas, headline, highlight or "", scaled)
+        if info:
+            source_plan["headline"] = info
+            print(f"النص على الصورة: {info['text']} ({info['zone']})")
     destination.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(destination, "JPEG", quality=93, optimize=True)
     return destination
@@ -971,7 +1205,11 @@ def main():
             plan, design_images, provider_errors = analyze_with_providers(
                 images, article["title"], article["text"]
             )
-            create_design(design_images, plan, out_dir / "facebook_image.jpg")
+            create_design(
+                design_images, plan, out_dir / "facebook_image.jpg",
+                headline=rewritten.get("image_headline"),
+                highlight=rewritten.get("image_highlight"),
+            )
             image_file = "facebook_image.jpg"
             if provider_errors:
                 image_note = (
@@ -992,7 +1230,9 @@ def main():
             try:
                 plan = fallback_plan(1)
                 create_design(
-                    images[:1], plan, out_dir / "facebook_image.jpg"
+                    images[:1], plan, out_dir / "facebook_image.jpg",
+                    headline=rewritten.get("image_headline"),
+                    highlight=rewritten.get("image_highlight"),
                 )
                 image_file = "facebook_image.jpg"
                 image_note += (
@@ -1037,6 +1277,8 @@ def main():
         "hashtags": rewritten["hashtags"],
         "rewritten_article": rewritten["rewritten_article"],
         "image_file": image_file,
+        "image_headline": rewritten.get("image_headline"),
+        "image_highlight": rewritten.get("image_highlight"),
         "image_count": len(images),
         "image_source_urls": used_urls,
         "image_analysis_plan": plan,
