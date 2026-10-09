@@ -1,4 +1,3 @@
-
 name: Viral Content Factory
 
 on:
@@ -56,36 +55,42 @@ jobs:
           fi
 
       - name: Generate content
+        id: generate
         env:
           ARTICLE_URL: ${{ inputs.article_url }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
           GROQ_VISION_MODEL: ${{ vars.GROQ_VISION_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          VISION_PROVIDER: ${{ vars.VISION_PROVIDER }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
         run: python main.py
 
       - name: Verify output
         shell: bash
+        env:
+          OUT_DIR: ${{ steps.generate.outputs.out_dir }}
         run: |
           set -euo pipefail
 
-          if [[ ! -d output ]]; then
-            echo "::error::Output directory was not created."
+          if [[ -z "${OUT_DIR:-}" || ! -d "$OUT_DIR" ]]; then
+            echo "::error::Output directory for this article was not created."
             exit 1
           fi
 
-          if [[ -z "$(find output -type f -print -quit)" ]]; then
+          if [[ -z "$(find "$OUT_DIR" -type f -print -quit)" ]]; then
             echo "::error::No output files were generated."
             exit 1
           fi
 
-      - name: Upload output
+      - name: Upload output (this article only)
         uses: actions/upload-artifact@v4
         with:
           name: viral-content-package
-          path: output/
+          path: ${{ steps.generate.outputs.out_dir }}
           if-no-files-found: error
           retention-days: 14
 
