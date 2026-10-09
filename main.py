@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hashlib
@@ -16,14 +15,23 @@ from urllib.parse import urljoin, urlparse, urldefrag
 import requests
 import trafilatura
 from bs4 import BeautifulSoup, UnicodeDammit
-from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageEnhance,
+    ImageFilter,
+    ImageOps,
+    UnidentifiedImageError,
+)
 
-from grok import GrokError, analyze_images, rewrite_article
+from grok import GrokError, analyze_images, fallback_plan, rewrite_article
 
 
 OUTPUT_ROOT = Path("output")
 IMAGE_SIZE = 1080
-GUTTER = 12
+SS = 2                      # دقة مضاعفة لنعومة الحواف
+GUTTER = 10
+GUTTER_COLOR = "#FFFFFF"
 MAX_PAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTEMPTS = 14
@@ -396,183 +404,257 @@ def download_article_images(image_urls: list[str]):
     return [main_item] + rest[:3]
 
 
-def crop_region(
-    image: Image.Image,
-    crop: list[float],
-) -> Image.Image:
-    left, top, right, bottom = crop
-    width, height = image.size
+# ---------------------------------------------------------------------------
+# تصميم الصورة
+# ---------------------------------------------------------------------------
 
-    box = (
-        max(0, min(width - 1, round(left * width))),
-        max(0, min(height - 1, round(top * height))),
-        max(1, min(width, round(right * width))),
-        max(1, min(height, round(bottom * height))),
-    )
+def smart_window(image, box, aspect, mode="cover",
+                 padding=0.12, min_frac=0.2):
+    """
+    يحسب نافذة قص بنسبة أبعاد الخانة تمامًا وتحتوي العنصر المهم.
+    cover: أكبر نافذة ممكنة متمركزة على العنصر (للخلفيات والألواح).
+    tight: نافذة محكمة حول العنصر مع هامش (للتفصيل المكبر).
+    """
+    W, H = image.size
+    l, t, r, b = box
+    bl, br, bt, bb = l * W, r * W, t * H, b * H
+    cx, cy = (bl + br) / 2, (bt + bb) / 2
 
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return image.copy()
+    if W / H > aspect:
+        max_w, max_h = H * aspect, H
+    else:
+        max_w, max_h = W, W / aspect
 
-    return image.crop(box)
+    if mode == "cover":
+        win_w, win_h = max_w, max_h
+    else:
+        bw = max((br - bl) * (1 + 2 * padding), 1.0)
+        bh = max((bb - bt) * (1 + 2 * padding), 1.0)
+        win_w = bw if bw / bh > aspect else bh * aspect
+        win_w = min(max(win_w, max_w * min_frac), max_w)
+        win_h = win_w / aspect
+
+    x0 = min(max(cx - win_w / 2, 0), W - win_w)
+    y0 = min(max(cy - win_h / 2, 0), H - win_h)
+
+    # إن كان العنصر يتسع في النافذة فاجعله داخلها بالكامل.
+    if br - bl <= win_w:
+        x0 = min(max(x0, br - win_w), bl)
+    if bb - bt <= win_h:
+        y0 = min(max(y0, bb - win_h), bt)
+    x0 = min(max(x0, 0), W - win_w)
+    y0 = min(max(y0, 0), H - win_h)
+
+    return (x0, y0, x0 + win_w, y0 + win_h)
 
 
-def fit_tile(
-    image: Image.Image,
-    size: tuple[int, int],
-    crop: list[float] | None = None,
-) -> Image.Image:
-    source = crop_region(image, crop or [0, 0, 1, 1])
+def crop_window(image, win, size):
+    W, H = image.size
+    x0 = max(0, min(W - 1, round(win[0])))
+    y0 = max(0, min(H - 1, round(win[1])))
+    x1 = max(x0 + 1, min(W, round(win[2])))
+    y1 = max(y0 + 1, min(H, round(win[3])))
     return ImageOps.fit(
-        source,
+        image.crop((x0, y0, x1, y1)),
         size,
         method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.4),
     )
 
 
-def create_design(
-    images: list[Image.Image],
-    plan: dict,
-    destination: Path,
-):
+def polish(tile):
+    tile = ImageEnhance.Contrast(tile).enhance(1.06)
+    tile = ImageEnhance.Color(tile).enhance(1.10)
+    return ImageEnhance.Sharpness(tile).enhance(1.15)
+
+
+def paste_tile(canvas, image, item, box):
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    win = smart_window(image, item["subject_box"], w / h, "cover")
+    canvas.paste(polish(crop_window(image, win, (w, h))), (x0, y0))
+
+
+def paste_inset(canvas, tile, x, y, shape, border):
+    d = tile.width
+    mask = Image.new("L", (d, d), 0)
+    mdraw = ImageDraw.Draw(mask)
+    if shape == "circle":
+        mdraw.ellipse((0, 0, d - 1, d - 1), fill=255)
+    else:
+        mdraw.rounded_rectangle(
+            (0, 0, d - 1, d - 1), radius=int(d * 0.07), fill=255
+        )
+
+    # ظل ناعم
+    shadow = Image.new("L", canvas.size, 0)
+    shadow.paste(mask, (x + 6 * SS, y + 8 * SS))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(12 * SS))
+    shadow = shadow.point(lambda v: int(v * 0.55))
+    canvas.paste(
+        (0, 0, 0), (0, 0, canvas.width, canvas.height), shadow
+    )
+
+    canvas.paste(tile, (x, y), mask)
+    draw = ImageDraw.Draw(canvas)
+    box = (x, y, x + d - 1, y + d - 1)
+    if shape == "circle":
+        draw.ellipse(box, outline="white", width=border)
+    else:
+        draw.rounded_rectangle(
+            box, radius=int(d * 0.07), outline="white", width=border
+        )
+
+
+def build_single(canvas, images, plan):
+    size = canvas.width
+    item = plan["images"][0]
+    img = images[item["index"]]
+    W, H = img.size
+
+    # 1) الخلفية: مربع كامل متمركز على العنصر
+    main_win = smart_window(img, item["subject_box"], 1.0, "cover")
+    mx0, my0, mx1, _ = main_win
+    mw = mx1 - mx0
+    canvas.paste(
+        polish(crop_window(img, main_win, (size, size))), (0, 0)
+    )
+
+    # 2) نافذة التفصيل: محكمة وأصغر بوضوح من الخلفية (تكبير حقيقي)
+    dwin = smart_window(img, item["detail_box"], 1.0, "tight",
+                        padding=0.08)
+    dcx, dcy = (dwin[0] + dwin[2]) / 2, (dwin[1] + dwin[3]) / 2
+    dw = dwin[2] - dwin[0]
+    if dw > 0.5 * mw:
+        dw = 0.5 * mw
+        x0 = min(max(dcx - dw / 2, 0), W - dw)
+        y0 = min(max(dcy - dw / 2, 0), H - dw)
+        dwin = (x0, y0, x0 + dw, y0 + dw)
+
+    d = int(size * 0.31)
+    detail = polish(crop_window(img, dwin, (d, d)))
+
+    # 3) اختيار الزاوية الأقل تغطية للعنصر المهم
+    l, t, r, b = item["subject_box"]
+    sl, sr = (l * W - mx0) / mw * size, (r * W - mx0) / mw * size
+    st, sb = (t * H - my0) / mw * size, (b * H - my0) / mw * size
+    scx, scy = (sl + sr) / 2, (st + sb) / 2
+
+    m = int(size * 0.035)
+    corners = {
+        "top_right": (size - d - m, m),
+        "top_left": (m, m),
+        "bottom_right": (size - d - m, size - d - m),
+        "bottom_left": (m, size - d - m),
+    }
+
+    def overlap(pos):
+        px, py = pos
+        ow = max(0, min(px + d, sr) - max(px, sl))
+        oh = max(0, min(py + d, sb) - max(py, st))
+        return ow * oh
+
+    def score(pos):
+        px, py = pos
+        dist = ((px + d / 2 - scx) ** 2 + (py + d / 2 - scy) ** 2) ** 0.5
+        return (overlap(pos), -dist)
+
+    x, y = min(corners.values(), key=score)
+
+    # 4) حلقة على مصدر التكبير + خط يصلها بالدائرة
+    ring_cx = (dcx - mx0) / mw * size
+    ring_cy = (dcy - my0) / mw * size
+    ring_r = max(dw / mw * size / 2, 40 * SS)
+    ins_cx, ins_cy = x + d / 2, y + d / 2
+
+    if plan["show_ring"] and 0 <= ring_cx <= size and 0 <= ring_cy <= size:
+        draw = ImageDraw.Draw(canvas)
+        vx, vy = ins_cx - ring_cx, ins_cy - ring_cy
+        dist = (vx ** 2 + vy ** 2) ** 0.5
+        if dist > ring_r + d / 2 + 20 * SS:
+            ux, uy = vx / dist, vy / dist
+            draw.line(
+                (
+                    ring_cx + ux * ring_r, ring_cy + uy * ring_r,
+                    ins_cx - ux * d / 2, ins_cy - uy * d / 2,
+                ),
+                fill="white", width=4 * SS,
+            )
+        draw.ellipse(
+            (ring_cx - ring_r, ring_cy - ring_r,
+             ring_cx + ring_r, ring_cy + ring_r),
+            outline="white", width=5 * SS,
+        )
+
+    paste_inset(canvas, detail, x, y, plan["inset_shape"], 8 * SS)
+
+
+def build_panels(canvas, images, plan):
+    size = canvas.width
+    g = GUTTER * SS
+    layout = plan["layout"]
+
+    if layout == "two_panel":
+        half = (size - g) // 2
+        if plan["orientation"] == "stacked":
+            boxes = [(0, 0, size, half), (0, half + g, size, size)]
+        else:
+            boxes = [(0, 0, half, size), (half + g, 0, size, size)]
+
+    elif layout == "three_panel":
+        s = (size - g) // 2
+        boxes = [
+            (0, 0, s, size),                       # مستطيل طولي
+            (s + g, 0, size, s),                   # مربع علوي
+            (s + g, s + g, size, size),            # مربع سفلي
+        ]
+        if plan["main_side"] == "right":
+            boxes = [(size - x1, y0, size - x0, y1)
+                     for x0, y0, x1, y1 in boxes]
+
+    else:  # four_grid
+        half = (size - g) // 2
+        boxes = [
+            (0, 0, half, half),
+            (half + g, 0, size, half),
+            (0, half + g, half, size),
+            (half + g, half + g, size, size),
+        ]
+
+    for item, box in zip(plan["images"], boxes):
+        paste_tile(canvas, images[item["index"]], item, box)
+
+
+def create_design(images, plan, destination: Path):
     if not images:
         raise ProjectError("لا توجد صور صالحة للتصميم.")
 
-    # التحليل يرسل ثلاث صور كحد أقصى، لذا نستخدم القائمة نفسها.
-    images = images[:3]
-    count = len(images)
-    order = plan.get("image_order", list(range(count)))
-    order = [
-        i for i in order
-        if isinstance(i, int) and 0 <= i < count
+    plan = dict(plan)
+    plan["images"] = [
+        i for i in plan.get("images", [])
+        if 0 <= i.get("index", -1) < len(images)
     ]
-    order += [i for i in range(count) if i not in order]
+    if not plan["images"]:
+        raise ProjectError("خطة التصميم لا تشير إلى صور متاحة.")
 
-    crops = plan.get("crops", [])
-    layout = plan.get("layout", "single_inset")
-    canvas = Image.new("RGB", (IMAGE_SIZE, IMAGE_SIZE), "#111111")
+    size = IMAGE_SIZE * SS
+    canvas = Image.new("RGB", (size, size), GUTTER_COLOR)
 
-    if count == 1 or layout == "single_inset":
-        main_index = order[0]
-        main_crop = crops[main_index] if main_index < len(crops) else None
-        canvas = fit_tile(
-            images[main_index],
-            (IMAGE_SIZE, IMAGE_SIZE),
-            main_crop,
-        )
-
-        detail_index = plan.get("detail_image_index", main_index)
-        if not isinstance(detail_index, int) or not 0 <= detail_index < count:
-            detail_index = main_index
-
-        detail_crop = plan.get("detail_crop", [0.2, 0.2, 0.8, 0.8])
-        detail = fit_tile(
-            images[detail_index],
-            (300, 300),
-            detail_crop,
-        )
-
-        position = plan.get("inset_position", "top_right")
-        margin = 34
-        positions = {
-            "top_left": (margin, margin),
-            "top_right": (IMAGE_SIZE - 300 - margin, margin),
-            "bottom_left": (margin, IMAGE_SIZE - 300 - margin),
-            "bottom_right": (
-                IMAGE_SIZE - 300 - margin,
-                IMAGE_SIZE - 300 - margin,
-            ),
-        }
-        x, y = positions.get(position, positions["top_right"])
-
-        if plan.get("inset_shape") == "circle":
-            mask = Image.new("L", (300, 300), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, 299, 299), fill=255)
-            canvas.paste(detail, (x, y), mask)
-            draw = ImageDraw.Draw(canvas)
-            draw.ellipse(
-                (x, y, x + 299, y + 299),
-                outline="white",
-                width=8,
-            )
-        else:
-            canvas.paste(detail, (x, y))
-            ImageDraw.Draw(canvas).rectangle(
-                (x, y, x + 299, y + 299),
-                outline="white",
-                width=8,
-            )
-
-    elif count == 2 or layout == "two_panel":
-        half = (IMAGE_SIZE - GUTTER) // 2
-        for slot, index in enumerate(order[:2]):
-            box = (
-                (0, 0, IMAGE_SIZE, half)
-                if slot == 0
-                else (0, half + GUTTER, IMAGE_SIZE, IMAGE_SIZE)
-            )
-            crop = crops[index] if index < len(crops) else None
-            tile = fit_tile(
-                images[index],
-                (box[2] - box[0], box[3] - box[1]),
-                crop,
-            )
-            canvas.paste(tile, (box[0], box[1]))
-
-    elif count == 3 and layout == "three_panel":
-        left_width = 660
-        right_width = IMAGE_SIZE - left_width - GUTTER
-        half_height = (IMAGE_SIZE - GUTTER) // 2
-
-        boxes = [
-            (0, 0, left_width, IMAGE_SIZE),
-            (left_width + GUTTER, 0, IMAGE_SIZE, half_height),
-            (
-                left_width + GUTTER,
-                half_height + GUTTER,
-                IMAGE_SIZE,
-                IMAGE_SIZE,
-            ),
-        ]
-
-        for slot, index in enumerate(order[:3]):
-            box = boxes[slot]
-            crop = crops[index] if index < len(crops) else None
-            tile = fit_tile(
-                images[index],
-                (box[2] - box[0], box[3] - box[1]),
-                crop,
-            )
-            canvas.paste(tile, (box[0], box[1]))
-
+    if plan["layout"] == "single_inset" or len(plan["images"]) == 1:
+        build_single(canvas, images, plan)
     else:
-        # شبكة آمنة عند وجود عدد صور أو تخطيط غير متوقع.
-        half = (IMAGE_SIZE - GUTTER) // 2
-        boxes = [
-            (0, 0, half, half),
-            (half + GUTTER, 0, IMAGE_SIZE, half),
-            (0, half + GUTTER, half, IMAGE_SIZE),
-            (half + GUTTER, half + GUTTER, IMAGE_SIZE, IMAGE_SIZE),
-        ]
-        for slot, index in enumerate(order[:4]):
-            box = boxes[slot]
-            crop = crops[index] if index < len(crops) else None
-            tile = fit_tile(
-                images[index],
-                (box[2] - box[0], box[3] - box[1]),
-                crop,
-            )
-            canvas.paste(tile, (box[0], box[1]))
+        build_panels(canvas, images, plan)
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(
-        destination,
-        "JPEG",
-        quality=92,
-        optimize=True,
+    canvas = canvas.resize(
+        (IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.LANCZOS
     )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(destination, "JPEG", quality=93, optimize=True)
     return destination
 
+
+# ---------------------------------------------------------------------------
+# الملفات والتشغيل
+# ---------------------------------------------------------------------------
 
 def write_text_file(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -630,14 +712,8 @@ def main():
     if images:
         print("4/6: تحليل الصور باستخدام Groq Vision...")
         try:
-            plan = analyze_images(images[:3])
-            # يجب استخدام الصور الثلاث نفسها التي حللها النموذج.
-            design_images = images[:3]
-            create_design(
-                design_images,
-                plan,
-                out_dir / "facebook_image.jpg",
-            )
+            plan = analyze_images(images[:4])
+            create_design(images[:4], plan, out_dir / "facebook_image.jpg")
             image_file = "facebook_image.jpg"
 
         except (GrokError, ProjectError, OSError, ValueError) as exc:
@@ -649,19 +725,9 @@ def main():
 
             # احتياط محلي واضح: صورة واحدة فقط دون ادعاء نجاح تحليل AI.
             try:
-                fallback_plan = {
-                    "layout": "single_inset",
-                    "image_order": [0],
-                    "crops": [[0.0, 0.0, 1.0, 1.0]],
-                    "detail_image_index": 0,
-                    "detail_crop": [0.2, 0.2, 0.8, 0.8],
-                    "inset_shape": "circle",
-                    "inset_position": "top_right",
-                }
+                plan = fallback_plan(1)
                 create_design(
-                    images[:1],
-                    fallback_plan,
-                    out_dir / "facebook_image.jpg",
+                    images[:1], plan, out_dir / "facebook_image.jpg"
                 )
                 image_file = "facebook_image.jpg"
                 image_note += (
@@ -670,9 +736,7 @@ def main():
             except (ProjectError, OSError, ValueError) as fallback_exc:
                 image_note += f" وفشل التصميم الاحتياطي: {fallback_exc}"
     else:
-        image_note = (
-            "لم يتم العثور على صور صالحة. لم تُنشأ صورة بديلة."
-        )
+        image_note = "لم يتم العثور على صور صالحة. لم تُنشأ صورة بديلة."
         print("تحذير:", image_note)
 
     print("5/6: حفظ المنشور والمقال...")
