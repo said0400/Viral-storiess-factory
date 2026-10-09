@@ -16,25 +16,29 @@ from urllib.parse import urljoin, urlparse, urldefrag
 import requests
 import trafilatura
 from bs4 import BeautifulSoup, UnicodeDammit
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageFilter,
+    ImageOps,
+    UnidentifiedImageError,
+)
 
-from grok import GrokError, rewrite_article
+from grok import GrokError, analyze_images, rewrite_article
 
 
 OUTPUT_ROOT = Path("output")
-
-IMAGE_SIZE = 1080
-IMAGE_GUTTER = 12
-
+SIZE = 1080
+GUTTER = 10
 MAX_PAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGES = 4
 MAX_IMAGE_ATTEMPTS = 20
-MIN_IMAGE_WIDTH = 400
-MIN_IMAGE_HEIGHT = 300
+MIN_IMAGE_WIDTH = 350
+MIN_IMAGE_HEIGHT = 250
 REQUEST_TIMEOUT = 30
 
-JUNK_IMAGE_HINTS = (
+JUNK_HINTS = (
     "logo", "icon", "avatar", "sprite", "pixel", "tracking",
     "spacer", "placeholder", "banner-ad", "/ads/", "advert",
     "emoji", "gravatar",
@@ -46,239 +50,169 @@ USER_AGENT = (
 )
 
 SESSION = requests.Session()
-SESSION.headers.update(
-    {
-        "User-Agent": USER_AGENT,
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;q=0.9,"
-            "image/avif,image/webp,*/*;q=0.8"
-        ),
-        "Accept-Language": "ar,en;q=0.8",
-    }
-)
+SESSION.headers.update({
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ar,en;q=0.8",
+})
 
 
-class ProjectError(RuntimeError):
-    """خطأ متوقع برسالة واضحة للمستخدم."""
+class ProjectError(Exception):
+    """خطأ متوقع يمكن عرضه للمستخدم."""
 
 
 def validate_public_url(url: str) -> str:
-    """قبول HTTP(S) فقط ورفض أسماء المضيفين وعناوين IP غير العامة."""
-
     if not isinstance(url, str) or not url.strip():
         raise ProjectError("رابط المقال فارغ.")
 
-    url = url.strip()
-
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname
-        port = parsed.port
-    except ValueError as exc:
-        raise ProjectError("الرابط غير صالح.") from exc
+    parsed = urlparse(url.strip())
 
     if parsed.scheme.lower() not in ("http", "https"):
-        raise ProjectError("الرابط يجب أن يبدأ بـ http:// أو https://.")
+        raise ProjectError("يجب أن يبدأ الرابط بـ http:// أو https://.")
 
-    if not hostname:
-        raise ProjectError("الرابط لا يحتوي على اسم موقع صالح.")
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ProjectError("الرابط غير صالح أو يحتوي على بيانات دخول.")
 
-    if parsed.username or parsed.password:
-        raise ProjectError("الروابط التي تحتوي على بيانات دخول مرفوضة.")
+    host = parsed.hostname.rstrip(".").lower()
 
-    hostname = hostname.rstrip(".").lower()
-
-    if hostname in {
-        "localhost",
-        "localhost.localdomain",
-    } or hostname.endswith(".localhost"):
-        raise ProjectError("لا يمكن استخدام عنوان محلي.")
-
-    port = port or (443 if parsed.scheme.lower() == "https" else 80)
+    if host in {"localhost", "localhost.localdomain"}:
+        raise ProjectError("لا يُسمح باستخدام رابط محلي.")
 
     try:
-        # عناوين IP المكتوبة مباشرة لا تحتاج إلى DNS.
-        try:
-            literal_ip = ipaddress.ip_address(hostname)
-            addresses = [literal_ip]
-        except ValueError:
-            answers = socket.getaddrinfo(
-                hostname,
-                port,
-                type=socket.SOCK_STREAM,
-            )
-            addresses = [
-                ipaddress.ip_address(answer[4][0].split("%")[0])
-                for answer in answers
-            ]
-    except (OSError, ValueError) as exc:
-        raise ProjectError(
-            f"تعذر التحقق من عنوان الموقع: {hostname}"
-        ) from exc
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ProjectError("منفذ الرابط غير صالح.") from exc
+
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ProjectError(f"تعذر العثور على خادم {host}.") from exc
 
     if not addresses:
         raise ProjectError("لم يتم العثور على عنوان IP للموقع.")
 
-    if any(not address.is_global for address in addresses):
-        raise ProjectError(
-            "تم رفض الرابط لأنه يشير إلى عنوان IP غير عام."
-        )
+    for address in addresses:
+        raw_ip = address[4][0].split("%")[0]
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+        except ValueError as exc:
+            raise ProjectError("عنوان IP غير صالح.") from exc
 
-    return url
+        if not ip.is_global:
+            raise ProjectError("رُفض الرابط لأنه يشير إلى عنوان غير عام.")
+
+    return url.strip()
 
 
-def safe_get(
-    url: str,
-    max_bytes: int,
-    expected_image: bool = False,
-) -> tuple[str, str, bytes]:
-    """تنزيل محدود الحجم مع التحقق من وجهات التحويل."""
-
-    current_url = url
+def safe_get(url: str, max_bytes: int, expected_image: bool = False):
+    """تنزيل محدود الحجم مع التحقق من كل وجهة تحويل."""
+    current = url
 
     for _ in range(6):
-        current_url = validate_public_url(current_url)
+        validate_public_url(current)
 
         try:
             response = SESSION.get(
-                current_url,
+                current,
                 timeout=REQUEST_TIMEOUT,
                 allow_redirects=False,
                 stream=True,
             )
         except requests.RequestException as exc:
-            raise ProjectError(
-                f"تعذر الاتصال بالموقع: {exc}"
-            ) from exc
+            raise ProjectError(f"فشل الاتصال بالرابط: {exc}") from exc
 
         if response.is_redirect or response.is_permanent_redirect:
             location = response.headers.get("Location")
             response.close()
 
             if not location:
-                raise ProjectError("تحويل الرابط بلا وجهة.")
+                raise ProjectError("تحويل الرابط لا يحتوي على وجهة.")
 
-            current_url = urljoin(current_url, location)
+            current = urljoin(current, location)
             continue
 
         if not 200 <= response.status_code < 300:
             status = response.status_code
             response.close()
+            hint = " قد يمنع الموقع الوصول الآلي." if status in (401, 403, 429) else ""
+            raise ProjectError(f"أعاد الموقع HTTP {status}.{hint}")
 
-            hint = (
-                " قد يمنع الموقع الوصول الآلي."
-                if status in (401, 403, 429)
-                else ""
-            )
-
-            raise ProjectError(
-                f"أعاد الموقع HTTP {status}.{hint}"
-            )
-
-        content_type = response.headers.get(
-            "Content-Type", ""
-        ).lower()
+        content_type = response.headers.get("Content-Type", "").lower()
 
         if expected_image and not content_type.startswith("image/"):
             response.close()
-            raise ProjectError("الرابط لا يعيد نوع ملف صورة.")
+            raise ProjectError("الرابط لا يعيد ملف صورة.")
 
-        declared_size = response.headers.get("Content-Length")
-
-        if declared_size:
-            try:
-                if int(declared_size) > max_bytes:
-                    response.close()
-                    raise ProjectError("حجم الملف يتجاوز الحد المسموح.")
-            except ValueError:
-                pass
+        length = response.headers.get("Content-Length", "")
+        try:
+            if length and int(length) > max_bytes:
+                response.close()
+                raise ProjectError("الملف أكبر من الحد المسموح.")
+        except ValueError:
+            pass
 
         data = bytearray()
 
         try:
             for chunk in response.iter_content(chunk_size=65536):
-                if not chunk:
-                    continue
-
-                data.extend(chunk)
-
-                if len(data) > max_bytes:
-                    raise ProjectError(
-                        "حجم الملف تجاوز الحد المسموح أثناء التنزيل."
-                    )
+                if chunk:
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        raise ProjectError("الملف أكبر من الحد المسموح.")
         except requests.RequestException as exc:
-            raise ProjectError(
-                f"انقطع تنزيل الملف: {exc}"
-            ) from exc
+            raise ProjectError(f"انقطع تنزيل الملف: {exc}") from exc
         finally:
             response.close()
 
-        return current_url, content_type, bytes(data)
+        return current, content_type, bytes(data)
 
-    raise ProjectError("تجاوز الرابط عدد التحويلات المسموح به.")
+    raise ProjectError("تجاوز الرابط عدد التحويلات المسموح.")
 
 
 def clean_text(value: str | None) -> str:
     if not value:
         return ""
-
     return re.sub(r"\s+", " ", value).strip()
 
 
-def decode_html(html_bytes: bytes, content_type: str) -> str:
+def decode_html(data: bytes, content_type: str) -> str:
     match = re.search(r"charset=([\w\-]+)", content_type or "")
-    declared = match.group(1) if match else None
+    encodings = [match.group(1)] if match else []
 
-    encodings = [declared] if declared else []
-
-    dammit = UnicodeDammit(
-        html_bytes,
+    decoded = UnicodeDammit(
+        data,
         known_definite_encodings=encodings,
         is_html=True,
     )
-
-    if dammit.unicode_markup:
-        return dammit.unicode_markup
-
-    return html_bytes.decode("utf-8", errors="replace")
+    return decoded.unicode_markup or data.decode("utf-8", errors="replace")
 
 
-def extract_article(article_url: str) -> dict:
-    final_url, content_type, html_bytes = safe_get(
-        article_url,
-        max_bytes=MAX_PAGE_BYTES,
-    )
+def extract_article(url: str) -> dict:
+    final_url, content_type, data = safe_get(url, MAX_PAGE_BYTES)
 
     if "html" not in content_type and "xhtml" not in content_type:
-        raise ProjectError(
-            "الرابط لا يشير إلى صفحة HTML. أدخل رابط المقال نفسه."
-        )
+        raise ProjectError("الرابط ليس صفحة مقال HTML.")
 
-    html = decode_html(html_bytes, content_type)
+    html = decode_html(data, content_type)
     soup = BeautifulSoup(html, "html.parser")
 
     title = ""
-
     for selector in (
         'meta[property="og:title"]',
         'meta[name="twitter:title"]',
     ):
         node = soup.select_one(selector)
-
         if node:
             title = clean_text(node.get("content"))
-
             if title:
                 break
 
-    if not title and soup.find("h1"):
-        title = clean_text(soup.find("h1").get_text(" ", strip=True))
-
     if not title and soup.title:
         title = clean_text(soup.title.get_text(" ", strip=True))
-
     if not title:
-        title = "مقال بدون عنوان واضح"
+        heading = soup.find("h1")
+        title = clean_text(heading.get_text(" ", strip=True)) if heading else ""
+    title = title or "مقال بدون عنوان واضح"
 
     extracted = trafilatura.extract(
         html,
@@ -288,118 +222,77 @@ def extract_article(article_url: str) -> dict:
         include_links=False,
         favor_precision=True,
     )
-
     article_text = clean_text(extracted or "")
 
     if len(article_text) < 200:
         fallback = BeautifulSoup(html, "html.parser")
-
         for tag in fallback(
-            ["script", "style", "noscript", "nav", "footer", "aside"]
+            ["script", "style", "noscript", "nav", "footer", "aside", "form"]
         ):
             tag.decompose()
 
-        candidates = []
-
-        for selector in ("article", "main", '[role="main"]'):
-            candidates.extend(fallback.select(selector))
-
+        candidates = fallback.select("article, main, [role='main']")
+        candidates.sort(
+            key=lambda node: len(node.get_text(" ", strip=True)),
+            reverse=True,
+        )
         if candidates:
-            candidates.sort(
-                key=lambda node: len(node.get_text(" ", strip=True)),
-                reverse=True,
-            )
-
             article_text = clean_text(
                 candidates[0].get_text(" ", strip=True)
             )
 
     if len(article_text) < 200:
         raise ProjectError(
-            "تعذر استخراج نص كافٍ. قد يكون الموقع محميًا أو يحتاج "
-            "إلى JavaScript أو تسجيل الدخول."
+            "لم يُستخرج نص كافٍ. قد يكون الموقع محميًا أو يعتمد على JavaScript."
         )
 
     image_urls: list[str] = []
 
-    def add_image(candidate: str | None) -> None:
-        if not isinstance(candidate, str):
+    def add_image(candidate):
+        if not isinstance(candidate, str) or not candidate.strip():
             return
 
         candidate = candidate.strip()
-
-        if not candidate or candidate.startswith("data:"):
+        if candidate.startswith("data:"):
             return
 
         absolute = urldefrag(urljoin(final_url, candidate))[0]
-
-        parsed_image = urlparse(absolute)
-
-        if parsed_image.scheme not in ("http", "https"):
+        if urlparse(absolute).scheme not in ("http", "https"):
             return
 
-        lowered = absolute.lower()
-
-        if any(hint in lowered for hint in JUNK_IMAGE_HINTS):
+        if any(hint in absolute.lower() for hint in JUNK_HINTS):
             return
 
         if absolute not in image_urls:
             image_urls.append(absolute)
 
-    # الصور الرئيسية المعلنة، ثم الصور الموجودة داخل المقال.
     for selector in (
         'meta[property="og:image"]',
         'meta[name="twitter:image"]',
     ):
         node = soup.select_one(selector)
-
         if node:
             add_image(node.get("content"))
 
-    nodes = []
-
-    for selector in ("article img", "main img", '[role="main"] img'):
-        nodes.extend(soup.select(selector))
-
+    nodes = soup.select("article img, main img, [role='main'] img")
     if not nodes:
         nodes = soup.select("img")
 
-    seen_nodes = set()
-
     for node in nodes:
-        identity = id(node)
-
-        if identity in seen_nodes:
-            continue
-
-        seen_nodes.add(identity)
-
-        for attribute in (
-            "src",
-            "data-src",
-            "data-lazy-src",
-            "data-original",
+        for key in (
+            "src", "data-src", "data-lazy-src", "data-original",
         ):
-            add_image(node.get(attribute))
+            add_image(node.get(key))
 
         srcset = node.get("srcset") or node.get("data-srcset")
-
         if srcset:
             entries = [
-                item.strip().split()[0]
-                for item in srcset.split(",")
-                if item.strip()
+                part.strip().split()[0]
+                for part in srcset.split(",")
+                if part.strip()
             ]
-
-            # الأفضلية لأكبر عرض معلن، مع دعم srcset القياسي.
-            def srcset_width(entry: str) -> int:
-                match = re.search(r"\s+(\d+)w$", entry)
-                return int(match.group(1)) if match else 0
-
-            entries.sort(key=srcset_width, reverse=True)
-
-            for entry in entries:
-                add_image(entry)
+            if entries:
+                add_image(entries[-1])
 
     return {
         "source_url": final_url,
@@ -409,70 +302,39 @@ def extract_article(article_url: str) -> dict:
     }
 
 
-def average_hash(image: Image.Image) -> int:
-    small = image.convert("L").resize(
-        (8, 8),
-        Image.Resampling.LANCZOS,
-    )
+def download_article_images(urls: list[str]) -> list[tuple[str, Image.Image]]:
+    collected = []
+    seen_hashes = set()
 
-    pixels = list(small.getdata())
-    mean = sum(pixels) / len(pixels)
-    result = 0
-
-    for pixel in pixels:
-        result = (result << 1) | int(pixel >= mean)
-
-    return result
-
-
-def is_duplicate(value: int, known: list[int]) -> bool:
-    return any(
-        (value ^ other).bit_count() <= 5
-        for other in known
-    )
-
-
-def download_article_images(
-    image_urls: list[str],
-) -> list[tuple[str, Image.Image]]:
-    collected: list[tuple[str, Image.Image]] = []
-    hashes: list[int] = []
-
-    for image_url in image_urls[:MAX_IMAGE_ATTEMPTS]:
+    for url in urls[:MAX_IMAGE_ATTEMPTS]:
         if len(collected) >= MAX_IMAGES:
             break
 
         try:
             _, _, data = safe_get(
-                image_url,
-                max_bytes=MAX_IMAGE_BYTES,
-                expected_image=True,
+                url, MAX_IMAGE_BYTES, expected_image=True
             )
 
             with Image.open(BytesIO(data)) as source:
-                if getattr(source, "is_animated", False):
-                    source.seek(0)
-
                 source.verify()
 
             with Image.open(BytesIO(data)) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
 
             width, height = image.size
-
             if width < MIN_IMAGE_WIDTH or height < MIN_IMAGE_HEIGHT:
                 continue
-
-            if width / height > 3.0 or width / height < 0.33:
+            if width / height > 3.5 or width / height < 0.28:
                 continue
 
-            digest = average_hash(image)
+            thumb = image.resize((16, 16), Image.Resampling.LANCZOS).convert("L")
+            digest = hashlib.sha256(thumb.tobytes()).hexdigest()
 
-            if is_duplicate(digest, hashes):
+            if digest in seen_hashes:
                 continue
 
-            hashes.append(digest)
-            collected.append((image_url, image.copy()))
+            seen_hashes.add(digest)
+            collected.append((url, image.copy()))
 
         except (
             ProjectError,
@@ -482,99 +344,211 @@ def download_article_images(
             OSError,
             ValueError,
         ) as exc:
-            print(f"تحذير: تخطي صورة غير صالحة: {exc}")
-            continue
+            print(f"تحذير: تم تخطي صورة: {exc}")
 
-    if not collected:
-        return []
-
-    # نحتفظ بترتيب الصور المصدرية حتى لا تتغير هوية الصورة الرئيسية.
-    return collected[:MAX_IMAGES]
+    return collected
 
 
-def crop_to_box(
+def crop_from_plan(
     image: Image.Image,
-    box: tuple[int, int, int, int],
+    normalized: list[float],
 ) -> Image.Image:
-    x1, y1, x2, y2 = box
+    width, height = image.size
+    left, top, right, bottom = normalized
 
+    box = (
+        max(0, min(width - 1, round(left * width))),
+        max(0, min(height - 1, round(top * height))),
+        max(1, min(width, round(right * width))),
+        max(1, min(height, round(bottom * height))),
+    )
+
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return image.copy()
+
+    return image.crop(box)
+
+
+def fill_box(
+    image: Image.Image,
+    size: tuple[int, int],
+) -> Image.Image:
     return ImageOps.fit(
         image,
-        (x2 - x1, y2 - y1),
+        size,
         method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.4),
+        centering=(0.5, 0.45),
     )
 
 
-def create_collage(
-    images: list[Image.Image],
-    destination: Path,
-) -> Path:
-    """إنشاء تصميم مربع من صورة إلى أربع صور، بلا كتابة أو شعارات."""
+def _rounded_mask(size: tuple[int, int], radius: int) -> Image.Image:
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle(
+        (0, 0, size[0] - 1, size[1] - 1),
+        radius=radius,
+        fill=255,
+    )
+    return mask
 
-    if not images:
-        raise ProjectError(
-            "لم يتم العثور على صور صالحة في المقال."
+
+def add_inset(
+    canvas: Image.Image,
+    detail: Image.Image,
+    shape: str,
+    position: str,
+):
+    """تفصيل مكبّر بحد أبيض وظل خفيف، دون أي نص أو شعار."""
+    inset_size = 350
+    margin = 46
+    border = 9
+
+    detail = fill_box(detail, (inset_size, inset_size))
+    outer_size = inset_size + border * 2
+
+    layer = Image.new("RGBA", (outer_size + 30, outer_size + 30), (0, 0, 0, 0))
+    shadow_mask = Image.new("L", (outer_size, outer_size), 0)
+    shadow_draw = ImageDraw.Draw(shadow_mask)
+
+    if shape == "circle":
+        shadow_draw.ellipse((0, 0, outer_size - 1, outer_size - 1), fill=180)
+    else:
+        shadow_draw.rounded_rectangle(
+            (0, 0, outer_size - 1, outer_size - 1),
+            radius=22,
+            fill=180,
         )
 
-    images = images[:MAX_IMAGES]
+    shadow = Image.new("RGBA", shadow_mask.size, (0, 0, 0, 160))
+    shadow.putalpha(shadow_mask.filter(ImageFilter.GaussianBlur(8)))
+    layer.alpha_composite(shadow, (12, 12))
 
-    canvas = Image.new(
-        "RGB",
-        (IMAGE_SIZE, IMAGE_SIZE),
-        (18, 18, 18),
-    )
+    frame = Image.new("RGBA", (outer_size, outer_size), (255, 255, 255, 255))
+    inner_mask = Image.new("L", (inset_size, inset_size), 0)
+    draw = ImageDraw.Draw(inner_mask)
 
-    gap = IMAGE_GUTTER
-    half = (IMAGE_SIZE - gap) // 2
+    if shape == "circle":
+        draw.ellipse((0, 0, inset_size - 1, inset_size - 1), fill=255)
+    else:
+        draw.rounded_rectangle(
+            (0, 0, inset_size - 1, inset_size - 1),
+            radius=15,
+            fill=255,
+        )
+
+    frame.paste(detail, (border, border), inner_mask)
+    layer.alpha_composite(frame, (0, 0))
+
+    if "left" in position:
+        x = margin
+    else:
+        x = SIZE - margin - outer_size
+
+    if "top" in position:
+        y = margin
+    else:
+        y = SIZE - margin - outer_size
+
+    canvas_rgba = canvas.convert("RGBA")
+    canvas_rgba.alpha_composite(layer, (x - 10, y - 10))
+    canvas.paste(canvas_rgba.convert("RGB"))
+
+
+def create_design(
+    selected: list[tuple[str, Image.Image]],
+    plan: dict,
+    destination: Path,
+) -> Path:
+    if not selected:
+        raise ProjectError("لا توجد صور صالحة لإنشاء التصميم.")
+
+    images = [item[1] for item in selected]
+    order = [i for i in plan["image_order"] if i < len(images)]
+    images = [images[i] for i in order]
+    if not images:
+        raise ProjectError("خطة ترتيب الصور فارغة.")
+
+    crops_by_original = plan["crops"]
+    ordered_crops = [crops_by_original[i] for i in order]
+
+    canvas = Image.new("RGB", (SIZE, SIZE), (18, 18, 18))
+    layout = plan["layout"]
 
     if len(images) == 1:
-        boxes = [(0, 0, IMAGE_SIZE, IMAGE_SIZE)]
+        layout = "single_inset"
+    elif len(images) == 2 and layout in ("three_panel", "four_grid"):
+        layout = "two_panel"
+    elif len(images) == 3 and layout == "four_grid":
+        layout = "three_panel"
+    elif len(images) >= 4 and layout not in ("four_grid", "three_panel"):
+        layout = "four_grid"
 
-    elif len(images) == 2:
-        boxes = [
-            (0, 0, half, IMAGE_SIZE),
-            (half + gap, 0, IMAGE_SIZE, IMAGE_SIZE),
-        ]
+    gap = GUTTER
+    half = (SIZE - gap) // 2
 
-    elif len(images) == 3:
+    if layout == "single_inset":
+        main_crop = crop_from_plan(images[0], ordered_crops[0])
+        canvas = fill_box(main_crop, (SIZE, SIZE))
+
+        detail_index = plan["detail_image_index"]
+        if detail_index >= len(selected):
+            detail_index = order[0]
+
+        detail = crop_from_plan(
+            selected[detail_index][1],
+            plan["detail_crop"],
+        )
+        add_inset(
+            canvas,
+            detail,
+            plan["inset_shape"],
+            plan["inset_position"],
+        )
+
+    elif layout == "two_panel":
         boxes = [
-            (0, 0, half, IMAGE_SIZE),
-            (half + gap, 0, IMAGE_SIZE, half),
-            (half + gap, half + gap, IMAGE_SIZE, IMAGE_SIZE),
+            (0, 0, half, SIZE),
+            (half + gap, 0, SIZE, SIZE),
         ]
+        for image, crop, box in zip(images[:2], ordered_crops[:2], boxes):
+            tile = fill_box(crop_from_plan(image, crop), (
+                box[2] - box[0], box[3] - box[1]
+            ))
+            canvas.paste(tile, (box[0], box[1]))
+
+    elif layout == "three_panel":
+        boxes = [
+            (0, 0, half, SIZE),
+            (half + gap, 0, SIZE, half),
+            (half + gap, half + gap, SIZE, SIZE),
+        ]
+        for image, crop, box in zip(images[:3], ordered_crops[:3], boxes):
+            tile = fill_box(crop_from_plan(image, crop), (
+                box[2] - box[0], box[3] - box[1]
+            ))
+            canvas.paste(tile, (box[0], box[1]))
 
     else:
         boxes = [
             (0, 0, half, half),
-            (half + gap, 0, IMAGE_SIZE, half),
-            (0, half + gap, half, IMAGE_SIZE),
-            (half + gap, half + gap, IMAGE_SIZE, IMAGE_SIZE),
+            (half + gap, 0, SIZE, half),
+            (0, half + gap, half, SIZE),
+            (half + gap, half + gap, SIZE, SIZE),
         ]
-
-    for image, box in zip(images, boxes):
-        tile = crop_to_box(image, box)
-        canvas.paste(tile, (box[0], box[1]))
+        for image, crop, box in zip(images[:4], ordered_crops[:4], boxes):
+            tile = fill_box(crop_from_plan(image, crop), (
+                box[2] - box[0], box[3] - box[1]
+            ))
+            canvas.paste(tile, (box[0], box[1]))
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-
-    canvas.save(
-        destination,
-        format="JPEG",
-        quality=92,
-        optimize=True,
-        progressive=True,
-    )
-
+    canvas.save(destination, "JPEG", quality=94, optimize=True)
     return destination
 
 
-def write_text_file(path: Path, content: str) -> None:
+def write_text(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        content.rstrip() + "\n",
-        encoding="utf-8",
-    )
+    path.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
 def output_folder_for(url: str) -> Path:
@@ -582,89 +556,95 @@ def output_folder_for(url: str) -> Path:
     return OUTPUT_ROOT / digest
 
 
-def main() -> None:
+def main():
     article_url = os.getenv("ARTICLE_URL", "").strip()
-
-    force = os.getenv("FORCE_REPROCESS", "").strip().lower() in {
+    force = os.getenv("FORCE_REPROCESS", "").lower() in {
         "1", "true", "yes",
     }
 
     if not article_url:
-        raise ProjectError("لم يتم إدخال رابط المقال.")
+        raise ProjectError("أدخل رابط المقال من نموذج تشغيل GitHub Actions.")
 
-    # توحيد الرابط قبل احتساب بصمة المجلد.
     article_url = validate_public_url(article_url)
     out_dir = output_folder_for(article_url)
 
     if (out_dir / "result.json").exists() and not force:
         print(
-            f"تمت معالجة هذا الرابط سابقًا: {out_dir}\n"
+            f"هذا الرابط عولج سابقًا: {out_dir}. "
             "فعّل force_reprocess لإعادة المعالجة."
         )
         return
 
-    print("1/5: استخراج نص المقال والصور...")
+    print("1/6: استخراج المقال والصور...")
     article = extract_article(article_url)
 
-    print(f"العنوان الأصلي: {article['title']}")
-    print(f"طول النص: {len(article['text'])} حرف")
+    print(f"العنوان: {article['title']}")
+    print(f"طول النص: {len(article['text'])} حرفًا")
     print(f"روابط الصور المكتشفة: {len(article['image_urls'])}")
 
-    print("2/5: إعادة صياغة المقال عبر GroqCloud...")
+    print("2/6: إعادة كتابة المقال والمنشور...")
     rewritten = rewrite_article(
-        article_title=article["title"],
-        article_text=article["text"],
-        source_url=article["source_url"],
+        article["title"],
+        article["text"],
+        article["source_url"],
     )
 
-    print("3/5: تنزيل الصور والتحقق منها...")
+    print("3/6: تنزيل الصور والتحقق منها...")
     selected = download_article_images(article["image_urls"])
-    images = [image for _, image in selected]
-    used_urls = [url for url, _ in selected]
+    print(f"الصور الصالحة: {len(selected)}")
 
-    print(f"عدد الصور الصالحة: {len(images)}")
-
-    print("4/5: إنشاء صورة فيسبوك مربعة...")
     image_file = None
     image_note = ""
+    image_plan = None
 
-    try:
-        create_collage(images, out_dir / "facebook_image.jpg")
-        image_file = "facebook_image.jpg"
+    if selected:
+        print("4/6: تحليل الصور واختيار التصميم والقص باستخدام Groq Vision...")
+        try:
+            image_plan = analyze_images([image for _, image in selected])
+            print("التكوين المختار:", image_plan["layout"])
+            print("سبب التصميم:", image_plan.get("reason", ""))
 
-    except ProjectError as exc:
-        image_note = str(exc)
-        print(f"تحذير: {image_note}")
+            print("5/6: تنفيذ التصميم المربع...")
+            create_design(
+                selected,
+                image_plan,
+                out_dir / "facebook_image.jpg",
+            )
+            image_file = "facebook_image.jpg"
 
-    print("5/5: حفظ المقال والمنشور والبيانات...")
-    hashtags_text = " ".join(rewritten["hashtags"])
+        except (GrokError, ProjectError, OSError, ValueError) as exc:
+            image_note = (
+                "تعذر إكمال تحليل الصور أو التصميم. "
+                f"التفاصيل: {exc}"
+            )
+            print("تحذير:", image_note)
+    else:
+        image_note = (
+            "لم يتم العثور على صور صالحة. "
+            "لم تُنشأ صورة بديلة من مصدر غير متعلق بالمقال."
+        )
+        print("تحذير:", image_note)
+
+    print("6/6: حفظ ملفات النتائج...")
+    hashtags = " ".join(rewritten["hashtags"])
 
     post_parts = [
         rewritten["title"],
         rewritten["facebook_post"],
     ]
-
-    if hashtags_text:
-        post_parts.append(hashtags_text)
-
+    if hashtags:
+        post_parts.append(hashtags)
     post_parts.append(f"المصدر: {article['source_url']}")
 
-    write_text_file(
-        out_dir / "facebook_post.txt",
-        "\n\n".join(post_parts),
-    )
+    write_text(out_dir / "facebook_post.txt", "\n\n".join(post_parts))
 
     markdown = (
         f"# {rewritten['title']}\n\n"
-        f"**المصدر الأصلي:** {article['source_url']}\n\n"
-        f"---\n\n"
+        f"**رابط المقال الأصلي:** {article['source_url']}\n\n"
+        "---\n\n"
         f"{rewritten['rewritten_article']}\n"
     )
-
-    write_text_file(
-        out_dir / "rewritten_article.md",
-        markdown,
-    )
+    write_text(out_dir / "rewritten_article.md", markdown)
 
     result = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -675,52 +655,47 @@ def main() -> None:
         "hashtags": rewritten["hashtags"],
         "rewritten_article": rewritten["rewritten_article"],
         "image_file": image_file,
-        "image_count": len(images),
-        "image_source_urls": used_urls,
+        "image_count": len(selected),
+        "image_source_urls": [url for url, _ in selected],
+        "image_plan": image_plan,
         "image_note": image_note,
-        "rights_notice": (
-            "تحقق من ترخيص كل صورة وحق إعادة نشرها قبل استخدامها. "
-            "وجود الصورة على الموقع الأصلي لا يمنح تلقائيًا حق استخدامها."
+        "rights_note": (
+            "تحقق من امتلاك حق إعادة نشر الصور والمقال. "
+            "وجود الصور في صفحة المصدر لا يمنح تلقائيًا حق إعادة استخدامها."
         ),
-        "verification_notice": (
-            "تمت إعادة الصياغة من النص المستخرج، ولم يحدث تحقق مستقل "
-            "من الوقائع."
+        "fact_check_note": (
+            "أعيدت صياغة النص اعتمادًا على المادة المستخرجة؛ "
+            "لم يُجرَ تحقق مستقل من الوقائع."
         ),
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    (out_dir / "result.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    write_text(
+        out_dir / "result.json",
+        json.dumps(result, ensure_ascii=False, indent=2),
     )
 
-    print(f"\nاكتمل التشغيل: {out_dir}")
-
-    for filename in (
+    print("\nاكتمل التشغيل. الملفات في:", out_dir)
+    for name in (
         "facebook_image.jpg",
         "facebook_post.txt",
         "rewritten_article.md",
         "result.json",
     ):
-        path = out_dir / filename
-
-        if path.exists():
-            print(f"- {path}")
+        path = out_dir / name
+        if path.is_file():
+            print("-", path)
 
 
 if __name__ == "__main__":
     try:
         main()
-
     except (ProjectError, GrokError) as exc:
         print(f"\nخطأ: {exc}", file=sys.stderr)
         sys.exit(1)
-
     except KeyboardInterrupt:
         print("\nتم إيقاف التشغيل.", file=sys.stderr)
         sys.exit(130)
-
     except Exception as exc:
         print(
             f"\nخطأ غير متوقع: {type(exc).__name__}: {exc}",
