@@ -590,6 +590,110 @@ def _analyze_once(
     return plan
 
 
+def _refine_detail(
+    image: Image.Image,
+    item: dict[str, Any],
+    article_title: str,
+) -> list[float] | None:
+    """
+    تصحيح موضع التفصيل: يُقتطع محيط التفصيل ويُسأل النموذج عن موضع العنصر
+    داخل المقتطع فقط، فيصغر خطأ الإحداثيات كثيرًا. يعيد None عند الفشل.
+    """
+    label = (item.get("detail_label") or "").strip()
+    if not label:
+        return None
+
+    W, H = image.size
+    db = item["detail_box"]
+    bw, bh = (db[2] - db[0]) * W, (db[3] - db[1]) * H
+    cx, cy = (db[0] + db[2]) / 2 * W, (db[1] + db[3]) / 2 * H
+
+    side = max(bw, bh) * 3.0
+    side = min(max(side, 0.3 * min(W, H)), min(W, H))
+    x0 = int(min(max(cx - side / 2, 0), W - side))
+    y0 = int(min(max(cy - side / 2, 0), H - side))
+    crop = image.crop((x0, y0, x0 + int(side), y0 + int(side)))
+    cw, ch = crop.size
+
+    model = (
+        os.getenv("GROQ_VISION_MODEL", "").strip()
+        or DEFAULT_VISION_MODEL
+    )
+    text = f"""
+هذه صورة مقتطعة من صورة أكبر. حدّد مستطيلًا محكمًا حول: «{label}».
+(عنوان المقال للفهم فقط: {(article_title or '').strip()[:200]})
+الإحداثيات أعداد صحيحة من 0 إلى 1000 بصيغة [left, top, right, bottom]
+نسبة إلى هذه الصورة المقتطعة، والأصل أعلى اليسار.
+إن لم تجد العنصر فأعد found=false.
+أعد JSON فقط: {{"found": true, "box": [300, 350, 650, 700]}}
+"""
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "أنت محلل بصري دقيق. أعد JSON صالحًا فقط.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _image_data_url(crop, 512)},
+                    },
+                ],
+            },
+        ],
+        "temperature": 0.0,
+        "max_tokens": 1500,
+        "response_format": {"type": "json_object"},
+    }
+
+    raw = _extract_json(_completion_content(_request(payload)))
+    if raw.get("found") is False:
+        return None
+
+    box = _norm_box(raw.get("box"), 0.05)
+    if box is None:
+        return None
+
+    return [
+        (x0 + box[0] * cw) / W,
+        (y0 + box[1] * ch) / H,
+        (x0 + box[2] * cw) / W,
+        (y0 + box[3] * ch) / H,
+    ]
+
+
+def _refine_plan(
+    images: list[Image.Image],
+    plan: dict[str, Any],
+    article_title: str,
+) -> dict[str, Any]:
+    if plan.get("layout") != "single_inset" or not plan.get("images"):
+        return plan
+
+    item = plan["images"][0]
+    refined = _refine_detail(images[item["index"]], item, article_title)
+    if refined is None:
+        print("تنبيه: لم يُؤكَّد موضع التفصيل؛ يُستخدم الصندوق الأصلي.")
+        return plan
+
+    sb = item["subject_box"]
+    rcx = (refined[0] + refined[2]) / 2
+    rcy = (refined[1] + refined[3]) / 2
+    if not (sb[0] <= rcx <= sb[2] and sb[1] <= rcy <= sb[3]):
+        print("تنبيه: الصندوق المصحح خارج العنصر الرئيسي؛ يُتجاهل.")
+        return plan
+
+    item["detail_box_original"] = item["detail_box"]
+    item["detail_box"] = refined
+    item["detail_refined"] = True
+    print("تم تصحيح موضع التفصيل بتحليل مقتطع.")
+    return plan
+
+
 def _is_size_error(exc: Exception) -> bool:
     text = str(exc)
     return any(
@@ -616,10 +720,15 @@ def analyze_images(
 
     for number, (max_side, context_chars) in enumerate(attempts, 1):
         try:
-            return _analyze_once(
+            plan = _analyze_once(
                 images, article_title, article_summary,
                 max_side, context_chars,
             )
+            try:
+                plan = _refine_plan(images, plan, article_title)
+            except GrokError as refine_exc:
+                print(f"تنبيه: تعذر تصحيح التفصيل: {refine_exc}")
+            return plan
         except GrokError as exc:
             last_error = exc
             if not _is_size_error(exc) or number == len(attempts):
