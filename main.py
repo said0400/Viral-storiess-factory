@@ -24,7 +24,13 @@ from PIL import (
     UnidentifiedImageError,
 )
 
-from grok import GrokError, analyze_images, fallback_plan, rewrite_article
+from grok import (
+    MAX_VISION_IMAGES,
+    GrokError,
+    analyze_images,
+    fallback_plan,
+    rewrite_article,
+)
 
 
 OUTPUT_ROOT = Path("output")
@@ -712,8 +718,9 @@ def main():
     if images:
         print("4/6: تحليل الصور باستخدام Groq Vision...")
         try:
-            plan = analyze_images(images[:4])
-            create_design(images[:4], plan, out_dir / "facebook_image.jpg")
+            design_images = images[:MAX_VISION_IMAGES]
+            plan = analyze_images(design_images)
+            create_design(design_images, plan, out_dir / "facebook_image.jpg")
             image_file = "facebook_image.jpg"
 
         except (GrokError, ProjectError, OSError, ValueError) as exc:
