@@ -727,17 +727,63 @@ def build_asis(canvas, images, plan):
     canvas.paste(fg, ((size - fg.width) // 2, (size - fg.height) // 2))
 
 
+def window_coverage(image, item, w, h):
+    """نسبة ما تحفظه نافذة القص من العنصر الرئيسي (1.0 = كامل)."""
+    W, H = image.size
+    aspect = w / h
+    anchor = choose_anchor(image, item, aspect)
+    win = smart_window(image, anchor, aspect, "cover")
+
+    sl, st, sr, sb = (
+        item["subject_box"][0] * W, item["subject_box"][1] * H,
+        item["subject_box"][2] * W, item["subject_box"][3] * H,
+    )
+    area = (sr - sl) * (sb - st)
+    if area <= 0:
+        return 1.0
+    iw = max(0.0, min(sr, win[2]) - max(sl, win[0]))
+    ih = max(0.0, min(sb, win[3]) - max(st, win[1]))
+    return iw * ih / area
+
+
+def two_panel_boxes(size):
+    g = GUTTER * SS
+    half = (size - g) // 2
+    side = [(0, 0, half, size), (half + g, 0, size, size)]
+    stacked = [(0, 0, size, half), (0, half + g, size, size)]
+    return side, stacked
+
+
+def panel_score(images, plan, boxes):
+    return sum(
+        window_coverage(
+            images[item["index"]], item,
+            box[2] - box[0], box[3] - box[1],
+        )
+        for item, box in zip(plan["images"], boxes)
+    )
+
+
 def build_panels(canvas, images, plan):
     size = canvas.width
     g = GUTTER * SS
     layout = plan["layout"]
 
     if layout == "two_panel":
-        half = (size - g) // 2
-        if plan["orientation"] == "stacked":
-            boxes = [(0, 0, size, half), (0, half + g, size, size)]
-        else:
-            boxes = [(0, 0, half, size), (half + g, 0, size, size)]
+        side_boxes, stack_boxes = two_panel_boxes(size)
+
+        wanted_stacked = plan["orientation"] == "stacked"
+        chosen = stack_boxes if wanted_stacked else side_boxes
+        other = side_boxes if wanted_stacked else stack_boxes
+
+        # نغيّر اتجاه النموذج فقط إذا كان الآخر يحفظ العنصر أفضل بوضوح.
+        if (
+            panel_score(images, plan, other)
+            > panel_score(images, plan, chosen) + 0.05
+        ):
+            chosen = other
+            print("تم تغيير اتجاه اللوحتين لأنه يحفظ العنصر الرئيسي أفضل.")
+        boxes = chosen
 
     elif layout == "three_panel":
         s = (size - g) // 2
@@ -767,6 +813,7 @@ def create_design(images, plan, destination: Path):
     if not images:
         raise ProjectError("لا توجد صور صالحة للتصميم.")
 
+    source_plan = plan
     plan = dict(plan)
     plan["images"] = [
         i for i in plan.get("images", [])
@@ -776,6 +823,23 @@ def create_design(images, plan, destination: Path):
         raise ProjectError("خطة التصميم لا تشير إلى صور متاحة.")
 
     size = IMAGE_SIZE * SS
+
+    # لوحتان تفقدان جزءًا كبيرًا من العنصر المهم: صورة واحدة مع تكبير أفضل.
+    if plan["layout"] == "two_panel" and len(plan["images"]) == 2:
+        side_boxes, stack_boxes = two_panel_boxes(size)
+        best = max(
+            panel_score(images, plan, side_boxes),
+            panel_score(images, plan, stack_boxes),
+        )
+        if best < 1.5:
+            print(
+                f"تحذير: اللوحتان تحفظان {best:.2f} من 2.0 فقط؛ "
+                "التحول إلى صورة واحدة مع تفصيل مكبر."
+            )
+            plan["layout"] = "single_inset"
+            plan["images"] = plan["images"][:1]
+            source_plan["layout_applied"] = "single_inset"
+
     canvas = Image.new("RGB", (size, size), GUTTER_COLOR)
 
     if plan["layout"] == "as_is":
