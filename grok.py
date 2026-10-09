@@ -410,6 +410,15 @@ def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
                 detail = _center_box(subject)
 
             label = item.get("detail_label", "")
+
+            avoid = []
+            raw_avoid = item.get("avoid_boxes")
+            if isinstance(raw_avoid, list):
+                for candidate in raw_avoid[:6]:
+                    box = _norm_box(candidate, 0.02)
+                    if box:
+                        avoid.append(box)
+
             items.append({
                 "index": idx,
                 "kind": kind,
@@ -418,6 +427,7 @@ def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
                 "detail_label": (
                     label[:120] if isinstance(label, str) else ""
                 ),
+                "avoid_boxes": avoid,
             })
 
     if not items:
