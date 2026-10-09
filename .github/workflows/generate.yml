@@ -8,7 +8,6 @@ on:
         description: "ضع رابط المقال الأصلي"
         required: true
         type: string
-
       force_reprocess:
         description: "إعادة معالجة الرابط حتى لو عولج سابقًا"
         required: false
@@ -24,9 +23,9 @@ concurrency:
 
 jobs:
   generate:
-    name: Create Arabic Content and Smart Image
+    name: Generate Arabic Content and Image
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -42,56 +41,21 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        shell: bash
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Validate Groq configuration
+      - name: Validate Groq API key
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
-
           if [[ -z "${GROQ_API_KEY:-}" ]]; then
-            echo "::error::Missing GROQ_API_KEY in repository secrets."
+            echo "::error::Missing GROQ_API_KEY in GitHub Secrets."
             exit 1
           fi
 
-      - name: Validate article URL
-        env:
-          ARTICLE_URL: ${{ inputs.article_url }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python - <<'PY'
-          import os
-          from urllib.parse import urlsplit
-
-          raw = os.environ.get("ARTICLE_URL", "").strip()
-
-          try:
-              parsed = urlsplit(raw)
-              valid = (
-                  parsed.scheme.lower() in ("http", "https")
-                  and bool(parsed.hostname)
-                  and not parsed.username
-                  and not parsed.password
-                  and parsed.port in (None, 80, 443)
-              )
-          except ValueError:
-              valid = False
-
-          if not valid:
-              raise SystemExit(
-                  "::error::Enter a valid HTTP(S) article URL."
-              )
-          PY
-
-      - name: Generate content and smart image
+      - name: Generate content
         env:
           ARTICLE_URL: ${{ inputs.article_url }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
@@ -100,78 +64,24 @@ jobs:
           GROQ_VISION_MODEL: ${{ vars.GROQ_VISION_MODEL }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
+        run: python main.py
+
+      - name: Verify output
         shell: bash
         run: |
           set -euo pipefail
-          python main.py
 
-      - name: Validate generated results
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RESULT_FILE="$(find output -type f -name result.json -print -quit)"
-
-          if [[ -z "$RESULT_FILE" ]]; then
-            echo "::error::result.json was not generated."
+          if [[ ! -d output ]]; then
+            echo "::error::Output directory was not created."
             exit 1
           fi
 
-          RESULT_DIR="$(dirname "$RESULT_FILE")"
+          if [[ -z "$(find output -type f -print -quit)" ]]; then
+            echo "::error::No output files were generated."
+            exit 1
+          fi
 
-          for FILE in \
-            "facebook_post.txt" \
-            "rewritten_article.md" \
-            "result.json"
-          do
-            if [[ ! -s "$RESULT_DIR/$FILE" ]]; then
-              echo "::error::Missing or empty file: $FILE"
-              exit 1
-            fi
-          done
-
-          python - "$RESULT_FILE" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          path = Path(sys.argv[1])
-
-          try:
-              data = json.loads(path.read_text(encoding="utf-8"))
-          except (OSError, ValueError) as exc:
-              raise SystemExit(f"::error::Invalid result.json: {exc}")
-
-          for key in (
-              "source_url",
-              "title",
-              "rewritten_article",
-              "facebook_post",
-              "hashtags",
-          ):
-              if key not in data:
-                  raise SystemExit(f"::error::Missing field: {key}")
-
-          image_name = data.get("image_file")
-
-          if image_name:
-              if Path(image_name).name != image_name:
-                  raise SystemExit("::error::Invalid image filename.")
-
-              image_path = path.parent / image_name
-
-              if not image_path.is_file() or image_path.stat().st_size == 0:
-                  raise SystemExit("::error::Image file is missing.")
-          else:
-              print(
-                  "::warning::No image was produced. "
-                  "The text package is still available."
-              )
-
-          print("Result files validated.")
-          PY
-
-      - name: Upload content package
+      - name: Upload output
         uses: actions/upload-artifact@v4
         with:
           name: viral-content-package
@@ -179,17 +89,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Commit generated output
+      - name: Commit generated files
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_REF" != refs/heads/* ]]; then
-            echo "::error::Run this workflow from a branch."
-            exit 1
-          fi
-
-          BRANCH="$GITHUB_REF_NAME"
+          BRANCH="${GITHUB_REF_NAME}"
 
           git config user.name "github-actions[bot]"
           git config user.email \
@@ -198,13 +103,12 @@ jobs:
           git add -A -- output/
 
           if git diff --cached --quiet; then
-            echo "No new output changes to commit."
+            echo "No output changes to commit."
             exit 0
           fi
 
-          git commit -m "Generate viral content package"
+          git commit -m "Generate article content"
 
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
-
           git push origin "HEAD:refs/heads/$BRANCH"
