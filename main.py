@@ -21,6 +21,7 @@ from PIL import (
     ImageEnhance,
     ImageFilter,
     ImageOps,
+    ImageStat,
     UnidentifiedImageError,
 )
 
@@ -511,6 +512,49 @@ def paste_inset(canvas, tile, x, y, shape, border):
         )
 
 
+def window_is_flat(image, win, threshold=14.0):
+    """منطقة شبه موحدة (سواد، سماء، جدار) لا تصلح للتكبير."""
+    crop = image.crop(tuple(int(v) for v in win)).convert("L")
+    crop = crop.resize((64, 64))
+    return ImageStat.Stat(crop).stddev[0] < threshold
+
+
+def make_detail_window(image, box, mw):
+    """
+    نافذة تفصيل مربعة بتكبير حقيقي (نحو 1.5x إلى 3x) قياسًا بالخلفية.
+    تعيد (النافذة، نسبة قطر الدائرة الصغيرة إلى الإطار).
+    """
+    W, H = image.size
+    tight = smart_window(image, box, 1.0, "tight", padding=0.08,
+                         min_frac=0.05)
+    r = (tight[2] - tight[0]) / mw
+    d_frac = min(0.38, max(0.27, 1.4 * r))
+    r = min(max(r, d_frac / 3.2), d_frac / 1.5)
+    dw = min(r * mw, W, H)
+
+    cx = (box[0] + box[2]) / 2 * W
+    cy = (box[1] + box[3]) / 2 * H
+    x0 = min(max(cx - dw / 2, 0), W - dw)
+    y0 = min(max(cy - dw / 2, 0), H - dw)
+    return (x0, y0, x0 + dw, y0 + dw), d_frac
+
+
+def pick_detail(image, item, mw):
+    """يجرّب صندوق النموذج ثم مركز العنصر، ويرفض المناطق الفارغة."""
+    sb = item["subject_box"]
+    cx, cy = (sb[0] + sb[2]) / 2, (sb[1] + sb[3]) / 2
+    hw, hh = (sb[2] - sb[0]) * 0.2, (sb[3] - sb[1]) * 0.2
+    centered = [
+        max(0.0, cx - hw), max(0.0, cy - hh),
+        min(1.0, cx + hw), min(1.0, cy + hh),
+    ]
+    for box in (item["detail_box"], centered):
+        win, d_frac = make_detail_window(image, box, mw)
+        if not window_is_flat(image, win):
+            return win, d_frac
+    return None, None
+
+
 def build_single(canvas, images, plan):
     size = canvas.width
     item = plan["images"][0]
@@ -525,51 +569,76 @@ def build_single(canvas, images, plan):
         polish(crop_window(img, main_win, (size, size))), (0, 0)
     )
 
-    # 2) نافذة التفصيل: محكمة وأصغر بوضوح من الخلفية (تكبير حقيقي)
-    dwin = smart_window(img, item["detail_box"], 1.0, "tight",
-                        padding=0.08)
+    # 2) نافذة التفصيل
+    dwin, d_frac = pick_detail(img, item, mw)
+    if dwin is None:
+        print("تحذير: لم تُوجد منطقة تفصيل مفيدة؛ صورة بلا دائرة.")
+        return
+
     dcx, dcy = (dwin[0] + dwin[2]) / 2, (dwin[1] + dwin[3]) / 2
     dw = dwin[2] - dwin[0]
-    if dw > 0.5 * mw:
-        dw = 0.5 * mw
-        x0 = min(max(dcx - dw / 2, 0), W - dw)
-        y0 = min(max(dcy - dw / 2, 0), H - dw)
-        dwin = (x0, y0, x0 + dw, y0 + dw)
-
-    d = int(size * 0.31)
+    d = int(size * d_frac)
     detail = polish(crop_window(img, dwin, (d, d)))
+    print(f"نسبة التكبير الفعلية: {d / (dw / mw * size):.2f}x")
 
-    # 3) اختيار الزاوية الأقل تغطية للعنصر المهم
+    # 3) موضع الحلقة على الخلفية
+    ring_cx = (dcx - mx0) / mw * size
+    ring_cy = (dcy - my0) / mw * size
+    ring_r = dw / mw * size / 2
+
+    # 4) اختيار الزاوية: أقل تغطية للعنصر وأهدأ منطقة وأبعد عن الحلقة
     l, t, r, b = item["subject_box"]
     sl, sr = (l * W - mx0) / mw * size, (r * W - mx0) / mw * size
     st, sb = (t * H - my0) / mw * size, (b * H - my0) / mw * size
     scx, scy = (sl + sr) / 2, (st + sb) / 2
 
+    grid = 256
+    edges = canvas.convert("L").resize((grid, grid)).filter(
+        ImageFilter.FIND_EDGES
+    )
+    k = grid / size
+
+    def edge_density(px, py):
+        box = (
+            max(0, int(px * k)), max(0, int(py * k)),
+            min(grid, int((px + d) * k) + 1),
+            min(grid, int((py + d) * k) + 1),
+        )
+        if box[2] <= box[0] or box[3] <= box[1]:
+            return 1.0
+        return min(1.0, ImageStat.Stat(edges.crop(box)).mean[0] / 40.0)
+
+    def overlap_frac(px, py, ax0, ay0, ax1, ay1):
+        ow = max(0, min(px + d, ax1) - max(px, ax0))
+        oh = max(0, min(py + d, ay1) - max(py, ay0))
+        return ow * oh / (d * d)
+
     m = int(size * 0.035)
-    corners = {
-        "top_right": (size - d - m, m),
-        "top_left": (m, m),
-        "bottom_right": (size - d - m, size - d - m),
-        "bottom_left": (m, size - d - m),
-    }
+    corners = [
+        (size - d - m, m),
+        (m, m),
+        (size - d - m, size - d - m),
+        (m, size - d - m),
+    ]
 
-    def overlap(pos):
-        px, py = pos
-        ow = max(0, min(px + d, sr) - max(px, sl))
-        oh = max(0, min(py + d, sb) - max(py, st))
-        return ow * oh
-
-    def score(pos):
+    def penalty(pos):
         px, py = pos
         dist = ((px + d / 2 - scx) ** 2 + (py + d / 2 - scy) ** 2) ** 0.5
-        return (overlap(pos), -dist)
+        return (
+            3.0 * overlap_frac(px, py, sl, st, sr, sb)
+            + 4.0 * overlap_frac(
+                px, py,
+                ring_cx - ring_r, ring_cy - ring_r,
+                ring_cx + ring_r, ring_cy + ring_r,
+            )
+            + 1.0 * edge_density(px, py)
+            - 0.2 * dist / size
+        )
 
-    x, y = min(corners.values(), key=score)
+    x, y = min(corners, key=penalty)
 
-    # 4) حلقة على مصدر التكبير + خط يصلها بالدائرة
-    ring_cx = (dcx - mx0) / mw * size
-    ring_cy = (dcy - my0) / mw * size
-    ring_r = max(dw / mw * size / 2, 40 * SS)
+    # 5) حلقة على مصدر التكبير + خط يصلها بالدائرة
+    ring_r = max(ring_r, 40 * SS)
     ins_cx, ins_cy = x + d / 2, y + d / 2
 
     if plan["show_ring"] and 0 <= ring_cx <= size and 0 <= ring_cy <= size:
@@ -592,6 +661,32 @@ def build_single(canvas, images, plan):
         )
 
     paste_inset(canvas, detail, x, y, plan["inset_shape"], 8 * SS)
+
+
+def build_asis(canvas, images, plan):
+    """صورة مركّبة أو لقطة شاشة: تُعرض كاملة دون قص ولا دمج."""
+    size = canvas.width
+    item = plan["images"][0]
+    img = images[item["index"]]
+    W, H = img.size
+
+    if 0.8 <= W / H <= 1.25:
+        paste_tile(canvas, img, item, (0, 0, size, size))
+        return
+
+    small = size // 4
+    bg = ImageOps.fit(img, (small, small), Image.Resampling.LANCZOS)
+    bg = bg.filter(ImageFilter.GaussianBlur(8 * SS))
+    bg = bg.resize((size, size), Image.Resampling.BICUBIC)
+    bg = ImageEnhance.Brightness(bg).enhance(0.5)
+    canvas.paste(bg, (0, 0))
+
+    scale = min(size / W, size / H)
+    fg = img.resize(
+        (max(1, round(W * scale)), max(1, round(H * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    canvas.paste(fg, ((size - fg.width) // 2, (size - fg.height) // 2))
 
 
 def build_panels(canvas, images, plan):
@@ -645,7 +740,9 @@ def create_design(images, plan, destination: Path):
     size = IMAGE_SIZE * SS
     canvas = Image.new("RGB", (size, size), GUTTER_COLOR)
 
-    if plan["layout"] == "single_inset" or len(plan["images"]) == 1:
+    if plan["layout"] == "as_is":
+        build_asis(canvas, images, plan)
+    elif plan["layout"] == "single_inset" or len(plan["images"]) == 1:
         build_single(canvas, images, plan)
     else:
         build_panels(canvas, images, plan)
@@ -719,7 +816,11 @@ def main():
         print("4/6: تحليل الصور باستخدام Groq Vision...")
         try:
             design_images = images[:MAX_VISION_IMAGES]
-            plan = analyze_images(design_images)
+            plan = analyze_images(
+                design_images,
+                article["title"],
+                article["text"][:1200],
+            )
             create_design(design_images, plan, out_dir / "facebook_image.jpg")
             image_file = "facebook_image.jpg"
 
