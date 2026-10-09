@@ -475,10 +475,32 @@ def polish(tile):
     return ImageEnhance.Sharpness(tile).enhance(1.15)
 
 
+def choose_anchor(image, item, aspect):
+    """
+    إن اتسع العنصر الرئيسي في نافذة القص فهو المرجع، وإلا (لوحة نحيفة
+    ووجه عريض مثلًا) تُثبَّت النافذة على التفصيل المهم كالعينين لئلا تُقطع.
+    """
+    W, H = image.size
+    if W / H > aspect:
+        max_w, max_h = H * aspect, H
+    else:
+        max_w, max_h = W, W / aspect
+
+    sb = item["subject_box"]
+    fits = (
+        (sb[2] - sb[0]) * W <= max_w * 1.02
+        and (sb[3] - sb[1]) * H <= max_h * 1.02
+    )
+    if fits:
+        return sb
+    return item.get("detail_box") or sb
+
+
 def paste_tile(canvas, image, item, box):
     x0, y0, x1, y1 = box
     w, h = x1 - x0, y1 - y0
-    win = smart_window(image, item["subject_box"], w / h, "cover")
+    anchor = choose_anchor(image, item, w / h)
+    win = smart_window(image, anchor, w / h, "cover")
     canvas.paste(polish(crop_window(image, win, (w, h))), (x0, y0))
 
 
@@ -563,7 +585,9 @@ def build_single(canvas, images, plan):
     W, H = img.size
 
     # 1) الخلفية: مربع كامل متمركز على العنصر
-    main_win = smart_window(img, item["subject_box"], 1.0, "cover")
+    main_win = smart_window(
+        img, choose_anchor(img, item, 1.0), 1.0, "cover"
+    )
     mx0, my0, mx1, _ = main_win
     mw = mx1 - mx0
     canvas.paste(
@@ -878,7 +902,7 @@ def main():
     plan = None
 
     if images:
-        print("4/6: تحليل الصور باستخدام Groq Vision...")
+        print("4/6: تحليل الصور بالذكاء الاصطناعي (Gemini ثم Groq)...")
         try:
             plan, design_images, provider_errors = analyze_with_providers(
                 images, article["title"], article["text"]
