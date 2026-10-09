@@ -14,7 +14,7 @@ from PIL import Image, ImageOps
 
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-oss-120b"
+DEFAULT_TEXT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
 REQUEST_TIMEOUT = 180
 MAX_ATTEMPTS = 3
