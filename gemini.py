@@ -152,7 +152,8 @@ def _generate(
             if attempt < MAX_ATTEMPTS:
                 wait = min(6 * attempt, 20)
                 print(
-                    f"تحذير: محاولة Gemini {attempt} فشلت؛ "
+                    f"تحذير: محاولة Gemini {attempt} فشلت "
+                    f"({last_error[:160]}) "
                     f"إعادة المحاولة بعد {wait} ثانية."
                 )
                 time.sleep(wait)
