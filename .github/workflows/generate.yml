@@ -1,0 +1,143 @@
+
+name: Viral Content Factory
+
+on:
+  workflow_dispatch:
+    inputs:
+      article_url:
+        description: "ضع رابط المقال الأصلي"
+        required: true
+        type: string
+      force_reprocess:
+        description: "إعادة معالجة الرابط حتى لو عولج سابقًا"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: viral-content-factory
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    name: Generate Arabic Article and Facebook Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Validate required secret
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        shell: bash
+        run: |
+          if [[ -z "${XAI_API_KEY:-}" ]]; then
+            echo "::error::Missing XAI_API_KEY GitHub secret."
+            exit 1
+          fi
+
+      - name: Validate article URL
+        env:
+          ARTICLE_URL: ${{ inputs.article_url }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+
+          raw_url = os.environ.get("ARTICLE_URL", "").strip()
+
+          try:
+              parsed = urlsplit(raw_url)
+              valid = (
+                  parsed.scheme in ("http", "https")
+                  and bool(parsed.hostname)
+                  and not parsed.username
+                  and not parsed.password
+              )
+          except ValueError:
+              valid = False
+
+          if not valid:
+              raise SystemExit(
+                  "::error::ARTICLE_URL must be a valid HTTP or HTTPS URL."
+              )
+          PY
+
+      - name: Generate content
+        env:
+          ARTICLE_URL: ${{ inputs.article_url }}
+          FORCE_REPROCESS: ${{ inputs.force_reprocess }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          GROK_MODEL: ${{ vars.GROK_MODEL }}
+          MAX_ARTICLE_CHARS: "30000"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python main.py
+
+      - name: Verify generated output
+        shell: bash
+        run: |
+          if [[ ! -d output ]]; then
+            echo "::error::The output directory was not created."
+            exit 1
+          fi
+
+          if [[ -z "$(find output -type f -print -quit)" ]]; then
+            echo "::error::No output files were generated."
+            exit 1
+          fi
+
+      - name: Upload output as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: content-package
+          path: output/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit generated files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH="${GITHUB_REF_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Add new, modified, and deleted files under output/.
+          git add -A -- output/
+
+          if git diff --cached --quiet; then
+            echo "No output changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Generate article content"
+
+          # Rebase the generated commit onto the latest remote branch.
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH"
+
+          # Push explicitly to the branch used for this workflow run.
+          git push origin "HEAD:refs/heads/$BRANCH"
