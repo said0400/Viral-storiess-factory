@@ -1,0 +1,58 @@
+{
+  "generated_at_utc": "2026-10-09T05:51:17.991312+00:00",
+  "source_url": "https://www.boredpanda.com/funny-ridiculous-mild-vandalism-pics/",
+  "original_title": "60 Tiny Vandalism Pranks That Were Too Funny And Creative To Be Truly Offended By",
+  "title": "مقالب تخريبية صغيرة تُضحكنا وتُظهر إبداعًا غير متوقع",
+  "facebook_post": "⚡️ هل سبق لك أن رأيت تخريبًا صغيرًا يتحول إلى ضحكة لا تُنسى؟\n\nفي مجموعة من المقالب الصغيرة التي جمعناها، نجد أن لمسة بسيطة في المكان المناسب قد تُحوِّل مشهدًا عاديًا إلى لحظة فكاهية لا تُقاوم. رغم أننا لا نشجع على التخريب، إلا أن الإبداع والذكاء وراء هذه الأعمال يستحقان الإعجاب. اكتشفوا أكثر المقالب طرافةً وتعرفوا على الفكرة التي جعلتها تُضحك الجميع!",
+  "hashtags": [
+    "#تخريب_مضحك",
+    "#إبداع_شعبي",
+    "#مقالب_صغيرة",
+    "#فن_الشارع",
+    "#ضحك",
+    "#ترفيه",
+    "#مقالب_مبدعة",
+    "#نكتة",
+    "#فن_الشارع_المبدع"
+  ],
+  "rewritten_article": "إنّ كتابة بسيطة في المكان المناسب يمكن أن تحول موقفًا مملًا إلى لحظة فكاهية أو مليئة بالدفء. وعلى الرغم من أنَّنا لا ينبغي أن نشجع على أي شكل من أشكال التخريب، إلا أن النتيجة أحيانًا تكون ممتعة لدرجة يصعب فيها تجاهل الإبداع الكامن وراءها. جمعنا مجموعة من هذه الأعمال التخريبية الصغيرة، بعضها يُظهر حنكة وذكاءً حقيقيين. استعرضوا معنا الأكثر طرافةً، وتعرفوا على كيفية تحويل البيئة المحيطة إلى مشهد أكثر تسليةً. قد تجدون أنفسكم تضحكون على مدى دقة تنفيذ بعض هذه المقالب، وتتساءلون عن الفكرة التي استلهمت كل واحدة منها.",
+  "image_file": "facebook_image.jpg",
+  "image_count": 4,
+  "image_source_urls": [
+    "https://static.boredpanda.com/blog/wp-content/uploads/2026/10/funny-ridiculous-mild-vandalism-pics-fb5.jpg",
+    "https://static.boredpanda.com/blog/wp-content/uploads/2026/10/funny-ridiculous-mild-vandalism-pics-cover_675.jpg",
+    "https://storage.mlcdn.com/account_image/921775/5LrSndsFV6wmJOEudf2ye5flKRmH7hLIntvH7ZBg.png",
+    "https://static.boredpanda.com/blog/wp-content/uploads/2026/10/6ac359bba95e9_d1jwxt5veum41__700.jpg"
+  ],
+  "image_analysis_plan": {
+    "layout": "single_inset",
+    "orientation": "side_by_side",
+    "main_side": "left",
+    "inset_shape": "circle",
+    "show_ring": true,
+    "images": [
+      {
+        "index": 0,
+        "kind": "photo",
+        "subject_box": [
+          0.15,
+          0.1,
+          0.85,
+          0.9
+        ],
+        "detail_box": [
+          0.3,
+          0.2,
+          0.7,
+          0.6
+        ],
+        "detail_label": ""
+      }
+    ],
+    "reason": "خطة احتياطية محلية",
+    "analyzed_image_count": 1
+  },
+  "image_note": "تعذر إكمال التحليل البصري أو تطبيق التصميم: خطأ Groq HTTP 413: {\"error\":{\"message\":\"Request too large for model `qwen/qwen3.8-27b` in organization `org_01krd8qd8eey8bd3bjd4b01fpz` service tier `on_demand` on input tokens per minute (ITPM): Limit 7000, Requested 7085, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing\",\"type\":\"tokens\",\"code\":\"rate_limit_exceeded\"}}\n استُخدم تصميم احتياطي محلي دون تحليل بصري ناجح.",
+  "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج؛ لم يتم التحقق من الوقائع بشكل مستقل."
+}
