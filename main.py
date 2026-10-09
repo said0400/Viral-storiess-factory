@@ -25,6 +25,7 @@ from PIL import (
     UnidentifiedImageError,
 )
 
+import gemini
 from grok import (
     MAX_VISION_IMAGES,
     GrokError,
@@ -592,6 +593,16 @@ def build_single(canvas, images, plan):
     st, sb = (t * H - my0) / mw * size, (b * H - my0) / mw * size
     scx, scy = (sl + sr) / 2, (st + sb) / 2
 
+    def to_canvas(box):
+        return (
+            (box[0] * W - mx0) / mw * size,
+            (box[1] * H - my0) / mw * size,
+            (box[2] * W - mx0) / mw * size,
+            (box[3] * H - my0) / mw * size,
+        )
+
+    avoid_canvas = [to_canvas(b) for b in item.get("avoid_boxes", [])]
+
     grid = 256
     edges = canvas.convert("L").resize((grid, grid)).filter(
         ImageFilter.FIND_EDGES
@@ -626,6 +637,9 @@ def build_single(canvas, images, plan):
         dist = ((px + d / 2 - scx) ** 2 + (py + d / 2 - scy) ** 2) ** 0.5
         return (
             3.0 * overlap_frac(px, py, sl, st, sr, sb)
+            + 2.5 * sum(
+                overlap_frac(px, py, *box) for box in avoid_canvas
+            )
             + 4.0 * overlap_frac(
                 px, py,
                 ring_cx - ring_r, ring_cy - ring_r,
@@ -759,9 +773,59 @@ def create_design(images, plan, destination: Path):
 # الملفات والتشغيل
 # ---------------------------------------------------------------------------
 
+def analyze_with_providers(images, title, text):
+    """
+    يحلل الصور بـ Gemini أولًا ثم Groq احتياطًا.
+    VISION_PROVIDER: auto (الافتراضي) أو gemini أو groq.
+    يعيد (الخطة، الصور التي حُللت، أخطاء المزودات الفاشلة).
+    """
+    provider = os.getenv("VISION_PROVIDER", "auto").strip().lower()
+    if provider not in ("auto", "gemini", "groq"):
+        provider = "auto"
+
+    summary = text[:1200]
+    errors = []
+
+    if provider in ("auto", "gemini"):
+        if os.getenv("GEMINI_API_KEY", "").strip():
+            batch = images[:gemini.MAX_IMAGES]
+            try:
+                plan = gemini.analyze_images(batch, title, summary)
+                return plan, batch, errors
+            except (
+                gemini.GeminiError, GrokError, ValueError, KeyError,
+                TypeError,
+            ) as exc:
+                errors.append(f"Gemini: {exc}")
+                print(f"::warning title=فشل Gemini::{exc}")
+        else:
+            errors.append("Gemini: المفتاح GEMINI_API_KEY غير موجود.")
+            print("تنبيه: GEMINI_API_KEY غير موجود؛ سيُستخدم Groq.")
+
+    if provider in ("auto", "groq"):
+        batch = images[:MAX_VISION_IMAGES]
+        try:
+            plan = analyze_images(batch, title, summary)
+            plan["provider"] = "groq"
+            return plan, batch, errors
+        except (GrokError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"Groq: {exc}")
+
+    raise ProjectError(" | ".join(errors) or "لا يوجد مزود تحليل صور.")
+
+
 def write_text_file(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
+
+
+def publish_output_dir(out_dir: Path) -> None:
+    """يكتب مسار مجلد هذا المقال فقط ليرفعه الـ workflow دون بقية المشاريع."""
+    target = os.getenv("GITHUB_OUTPUT")
+    if not target:
+        return
+    with open(target, "a", encoding="utf-8") as handle:
+        handle.write(f"out_dir={out_dir.as_posix()}\n")
 
 
 def output_folder_for(url: str) -> Path:
@@ -786,6 +850,7 @@ def main():
             f"هذا الرابط عولج سابقًا: {out_dir}. "
             "فعّل force_reprocess لإعادة المعالجة."
         )
+        publish_output_dir(out_dir)
         return
 
     print("1/6: استخراج المقال والصور...")
@@ -815,14 +880,17 @@ def main():
     if images:
         print("4/6: تحليل الصور باستخدام Groq Vision...")
         try:
-            design_images = images[:MAX_VISION_IMAGES]
-            plan = analyze_images(
-                design_images,
-                article["title"],
-                article["text"][:1200],
+            plan, design_images, provider_errors = analyze_with_providers(
+                images, article["title"], article["text"]
             )
             create_design(design_images, plan, out_dir / "facebook_image.jpg")
             image_file = "facebook_image.jpg"
+            if provider_errors:
+                image_note = (
+                    "نجح التحليل عبر "
+                    f"{plan.get('provider')} بعد فشل: "
+                    + " | ".join(provider_errors)
+                )
 
         except (GrokError, ProjectError, OSError, ValueError) as exc:
             image_note = (
@@ -830,6 +898,7 @@ def main():
                 f"{exc}"
             )
             print("تحذير:", image_note)
+            print(f"::warning title=فشل تحليل الصور::{image_note}")
 
             # احتياط محلي واضح: صورة واحدة فقط دون ادعاء نجاح تحليل AI.
             try:
@@ -899,6 +968,8 @@ def main():
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+    publish_output_dir(out_dir)
 
     print("\nاكتمل إنشاء المحتوى:", out_dir)
     for name in (
