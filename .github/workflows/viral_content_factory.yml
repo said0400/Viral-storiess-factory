@@ -81,6 +81,11 @@ jobs:
           GEMINI_WRITER_MODEL: ${{ vars.GEMINI_WRITER_MODEL }}
           WRITER_PROVIDER: ${{ vars.WRITER_PROVIDER }}
           AI_REVIEW: ${{ vars.AI_REVIEW }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_IMAGE_MODEL: ${{ vars.CF_IMAGE_MODEL }}
+          CF_IMAGE_ENABLED: ${{ vars.CF_IMAGE_ENABLED }}
+          CF_SKIP_SENSITIVE: ${{ vars.CF_SKIP_SENSITIVE }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
         run: python main.py
