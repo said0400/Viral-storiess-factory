@@ -520,8 +520,36 @@ def build_post_text(data: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def build_markdown(data: dict[str, Any]) -> str:
-    return f"# {data['title']}\n\n{data['rewritten_article'].strip()}\n"
+def _insert_middle_image(body: str, filename: str, alt: str) -> str:
+    """يدرج الصورة عند أقرب عنوان فرعي لمنتصف النص (أو أقرب فقرة)."""
+    alt = re.sub(r"[\[\]()]", "", alt or "").strip() or "صورة المقال"
+    tag = f"![{alt}]({filename})"
+    middle = len(body) / 2
+
+    headings = [m.start() for m in re.finditer(r"(?m)^## ", body) if m.start() > 0]
+    if headings:
+        pos = min(headings, key=lambda p: abs(p - middle))
+        return body[:pos].rstrip() + "\n\n" + tag + "\n\n" + body[pos:]
+
+    parts = body.split("\n\n")
+    if len(parts) < 2:
+        return body + "\n\n" + tag
+    running, best, best_gap = 0, 1, float("inf")
+    for i, part in enumerate(parts[:-1], start=1):
+        running += len(part) + 2
+        gap = abs(running - middle)
+        if gap < best_gap:
+            best, best_gap = i, gap
+    return "\n\n".join(parts[:best] + [tag] + parts[best:])
+
+
+def build_markdown(
+    data: dict[str, Any], middle_image: str | None = None
+) -> str:
+    body = data["rewritten_article"].strip()
+    if middle_image:
+        body = _insert_middle_image(body, middle_image, data["title"])
+    return f"# {data['title']}\n\n{body}\n"
 
 
 def build_seo_text(data: dict[str, Any]) -> str:
