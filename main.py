@@ -35,12 +35,12 @@ from PIL import (
 )
 
 import gemini
+import writer
 from grok import (
     MAX_VISION_IMAGES,
     GrokError,
     analyze_images,
     fallback_plan,
-    rewrite_article,
 )
 
 
@@ -1182,11 +1182,19 @@ def main():
     print("طول النص:", len(article["text"]))
     print("روابط الصور المكتشفة:", len(article["image_urls"]))
 
-    print("2/6: إعادة كتابة المقال والمنشور...")
-    rewritten = rewrite_article(
-        article_title=article["title"],
-        article_text=article["text"],
-        source_url=article["source_url"],
+    print("2/6: كتابة المقال والمنشور وحزمة SEO...")
+    try:
+        rewritten = writer.write_article(
+            article_title=article["title"],
+            article_text=article["text"],
+            source_url=article["source_url"],
+        )
+    except writer.WriterError as exc:
+        raise ProjectError(f"فشلت كتابة المقال: {exc}") from exc
+    print(
+        f"الكاتب: {rewritten['writer']['provider']} "
+        f"({rewritten['writer']['model']})، "
+        f"الكلمات: {rewritten['stats']['words']}"
     )
 
     print("3/6: تنزيل الصور والتحقق منها...")
@@ -1207,7 +1215,7 @@ def main():
             )
             create_design(
                 design_images, plan, out_dir / "facebook_image.jpg",
-                headline=rewritten["title"],
+                headline=rewritten["image_title"],
                 highlight=rewritten.get("image_highlight"),
             )
             image_file = "facebook_image.jpg"
@@ -1231,7 +1239,7 @@ def main():
                 plan = fallback_plan(1)
                 create_design(
                     images[:1], plan, out_dir / "facebook_image.jpg",
-                    headline=rewritten["title"],
+                    headline=rewritten["image_title"],
                     highlight=rewritten.get("image_highlight"),
                 )
                 image_file = "facebook_image.jpg"
@@ -1245,27 +1253,19 @@ def main():
         print("تحذير:", image_note)
 
     print("5/6: حفظ المنشور والمقال...")
-    hashtags_text = " ".join(rewritten["hashtags"])
-    post_parts = [
-        rewritten["title"],
-        rewritten["facebook_post"],
-    ]
-    if hashtags_text:
-        post_parts.append(hashtags_text)
-    post_parts.append(f"المصدر: {article['source_url']}")
-
     write_text_file(
-        out_dir / "facebook_post.txt",
-        "\n\n".join(post_parts),
+        out_dir / "facebook_post.txt", writer.build_post_text(rewritten)
     )
-
-    markdown = (
-        f"# {rewritten['title']}\n\n"
-        f"**رابط المقال الأصلي:** {article['source_url']}\n\n"
-        "---\n\n"
-        f"{rewritten['rewritten_article']}\n"
+    write_text_file(
+        out_dir / "rewritten_article.md", writer.build_markdown(rewritten)
     )
-    write_text_file(out_dir / "rewritten_article.md", markdown)
+    write_text_file(out_dir / "seo.txt", writer.build_seo_text(rewritten))
+    write_text_file(
+        out_dir / "editor_notes.txt",
+        writer.build_notes(
+            rewritten, article["source_url"], article["title"]
+        ),
+    )
 
     print("6/6: حفظ بيانات النتيجة...")
     result = {
@@ -1276,8 +1276,15 @@ def main():
         "facebook_post": rewritten["facebook_post"],
         "hashtags": rewritten["hashtags"],
         "rewritten_article": rewritten["rewritten_article"],
+        "alt_titles": rewritten["alt_titles"],
+        "seo": rewritten["seo"],
+        "writer": rewritten["writer"],
+        "article_stats": rewritten["stats"],
+        "article_audit": rewritten["audit"],
+        "article_review": rewritten["review"],
         "image_file": image_file,
-        "image_text": rewritten["title"],
+        "image_title": rewritten["image_title"],
+        "image_text": rewritten["image_title"],
         "image_highlight": rewritten.get("image_highlight"),
         "image_count": len(images),
         "image_source_urls": used_urls,
@@ -1288,8 +1295,9 @@ def main():
             "تحقق من الترخيص أو الإذن قبل النشر."
         ),
         "verification_note": (
-            "أعيدت صياغة المقال اعتمادًا على النص المستخرج؛ "
-            "لم يتم التحقق من الوقائع بشكل مستقل."
+            "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ "
+            "لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية "
+            "في article_review قد تخطئ، فراجع النص قبل النشر."
         ),
     }
 
@@ -1306,6 +1314,8 @@ def main():
         "facebook_image.jpg",
         "facebook_post.txt",
         "rewritten_article.md",
+        "seo.txt",
+        "editor_notes.txt",
         "result.json",
     ):
         if (out_dir / name).exists():
