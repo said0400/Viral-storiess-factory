@@ -97,11 +97,17 @@ def _generate(
     system_text: str,
     max_tokens: int = 8192,
     temperature: float = 0.1,
+    api_key: str | None = None,
+    models: list[str] | None = None,
 ) -> tuple[str, str]:
-    """يعيد (النص، اسم النموذج المستخدم)."""
+    """
+    يعيد (النص، اسم النموذج المستخدم).
+    api_key و models اختياريان: تستخدمهما وحدة كتابة المقال بمفتاحها المستقل.
+    """
+    key = (api_key or "").strip() or _api_key()
     headers = {
         "Content-Type": "application/json",
-        "x-goog-api-key": _api_key(),
+        "x-goog-api-key": key,
     }
     body = {
         "systemInstruction": {"parts": [{"text": system_text}]},
@@ -115,7 +121,7 @@ def _generate(
 
     last_error = "فشل الاتصال بواجهة Gemini."
 
-    for model in _models():
+    for model in (models or _models()):
         url = f"{GEMINI_BASE_URL}/{model}:generateContent"
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
