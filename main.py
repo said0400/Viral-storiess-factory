@@ -35,6 +35,8 @@ from PIL import (
 )
 
 import gemini
+import thumbnail
+import wide_collage
 import writer
 from grok import (
     MAX_VISION_IMAGES,
@@ -1136,6 +1138,49 @@ def analyze_with_providers(images, title, text):
     raise ProjectError(" | ".join(errors) or "لا يوجد مزود تحليل صور.")
 
 
+def build_wide_images(images, plan, rewritten, out_dir):
+    """
+    الصورتان العريضتان 16:9:
+    1) article_middle.jpg: دمج صور المقال بلا نص (توضع في منتصف المقال).
+    2) thumbnail.jpg: صورة المقال عبر Cloudflare + العنوان، أو الاحتياط.
+    """
+    info = {"middle": None, "thumbnail": None, "errors": []}
+    if not images or not plan:
+        info["errors"].append("لا توجد صور لصنع الصورتين العريضتين.")
+        return info
+
+    collage = None
+    try:
+        collage = wide_collage.create_wide_collage(
+            images, plan, out_dir / "article_middle.jpg"
+        )
+        info["middle"] = {
+            "file": "article_middle.jpg",
+            "layout": collage["layout"],
+        }
+    except (wide_collage.CollageError, OSError, ValueError, KeyError) as exc:
+        info["errors"].append(f"الصورة الأولى: {exc}")
+        print(f"::warning title=فشل الصورة العريضة الأولى::{exc}")
+
+    sensitive = bool((rewritten.get("review") or {}).get("sensitive"))
+    try:
+        info["thumbnail"] = thumbnail.create_thumbnail(
+            images=images,
+            plan=plan,
+            headline=rewritten["image_title"],
+            highlight=rewritten.get("image_highlight", ""),
+            collage=collage,
+            destination=out_dir / "thumbnail.jpg",
+            prompt_file=out_dir / "thumbnail_prompt.txt",
+            sensitive=sensitive,
+        )
+    except (thumbnail.ThumbnailError, OSError, ValueError, KeyError) as exc:
+        info["errors"].append(f"الصورة الثانية: {exc}")
+        print(f"::warning title=فشل صورة المقال::{exc}")
+
+    return info
+
+
 def write_text_file(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
@@ -1206,6 +1251,7 @@ def main():
     image_file = None
     image_note = ""
     plan = None
+    wide_plan, wide_images = None, []
 
     if images:
         print("4/6: تحليل الصور بالذكاء الاصطناعي (Gemini ثم Groq)...")
@@ -1213,6 +1259,11 @@ def main():
             plan, design_images, provider_errors = analyze_with_providers(
                 images, article["title"], article["text"]
             )
+            wide_plan = {
+                k: v for k, v in plan.items()
+                if k not in ("layout_applied", "headline")
+            }
+            wide_images = design_images
             create_design(
                 design_images, plan, out_dir / "facebook_image.jpg",
                 headline=rewritten["image_title"],
@@ -1235,6 +1286,8 @@ def main():
             print(f"::warning title=فشل تحليل الصور::{image_note}")
 
             # احتياط محلي واضح: صورة واحدة فقط دون ادعاء نجاح تحليل AI.
+            wide_images = images[:3]
+            wide_plan = fallback_plan(len(wide_images))
             try:
                 plan = fallback_plan(1)
                 create_design(
@@ -1252,12 +1305,21 @@ def main():
         image_note = "لم يتم العثور على صور صالحة. لم تُنشأ صورة بديلة."
         print("تحذير:", image_note)
 
+    print("4b/6: الصورتان العريضتان 16:9...")
+    wide_info = build_wide_images(
+        wide_images, wide_plan, rewritten, out_dir
+    )
+
     print("5/6: حفظ المنشور والمقال...")
     write_text_file(
         out_dir / "facebook_post.txt", writer.build_post_text(rewritten)
     )
     write_text_file(
-        out_dir / "rewritten_article.md", writer.build_markdown(rewritten)
+        out_dir / "rewritten_article.md",
+        writer.build_markdown(
+            rewritten,
+            middle_image="article_middle.jpg" if wide_info["middle"] else None,
+        ),
     )
     write_text_file(out_dir / "seo.txt", writer.build_seo_text(rewritten))
     write_text_file(
@@ -1283,6 +1345,7 @@ def main():
         "article_audit": rewritten["audit"],
         "article_review": rewritten["review"],
         "image_file": image_file,
+        "wide_images": wide_info,
         "image_title": rewritten["image_title"],
         "image_text": rewritten["image_title"],
         "image_highlight": rewritten.get("image_highlight"),
@@ -1312,6 +1375,9 @@ def main():
     print("\nاكتمل إنشاء المحتوى:", out_dir)
     for name in (
         "facebook_image.jpg",
+        "article_middle.jpg",
+        "thumbnail.jpg",
+        "thumbnail_prompt.txt",
         "facebook_post.txt",
         "rewritten_article.md",
         "seo.txt",
