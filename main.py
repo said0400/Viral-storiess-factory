@@ -40,6 +40,7 @@ import wide_collage
 import writer
 from grok import (
     MAX_VISION_IMAGES,
+    default_gallery,
     GrokError,
     analyze_images,
     fallback_plan,
@@ -1151,13 +1152,20 @@ def build_wide_images(images, plan, rewritten, out_dir):
 
     collage = None
     try:
-        collage = wide_collage.create_wide_collage(
-            images, plan, out_dir / "article_middle.jpg"
+        gallery = plan.get("gallery") or default_gallery(len(images))
+        collage = wide_collage.create_gallery_collage(
+            images, gallery, out_dir / "article_middle.jpg"
         )
         info["middle"] = {
             "file": "article_middle.jpg",
             "layout": collage["layout"],
+            "count": collage["count"],
+            "images": collage["images"],
         }
+        if collage["count"] == 1:
+            info["errors"].append(
+                "لم تتوفر إلا صورة صالحة واحدة لمعرض المقال."
+            )
     except (wide_collage.CollageError, OSError, ValueError, KeyError) as exc:
         info["errors"].append(f"الصورة الأولى: {exc}")
         print(f"::warning title=فشل الصورة العريضة الأولى::{exc}")
@@ -1286,7 +1294,7 @@ def main():
             print(f"::warning title=فشل تحليل الصور::{image_note}")
 
             # احتياط محلي واضح: صورة واحدة فقط دون ادعاء نجاح تحليل AI.
-            wide_images = images[:3]
+            wide_images = images[:4]
             wide_plan = fallback_plan(len(wide_images))
             try:
                 plan = fallback_plan(1)
