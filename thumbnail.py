@@ -212,9 +212,14 @@ def add_headline(canvas, headline, highlight, keep=None, preferred_zone=None):
 
 def reference_images(images, plan, limit=4):
     """مقتطعات حول العنصر الرئيسي من الصور الفوتوغرافية التي اختارها التحليل."""
-    items = [i for i in plan.get("images", [])
-             if 0 <= i.get("index", -1) < len(images)
-             and i.get("kind", "photo") == "photo"]
+    def valid(seq):
+        return [i for i in seq
+                if 0 <= i.get("index", -1) < len(images)
+                and i.get("kind", "photo") == "photo"
+                and i.get("subject_box")]
+
+    # صور المعرض الفوتوغرافية أولًا (أوسع)، ثم صور الخطة الرئيسية
+    items = valid(plan.get("gallery", [])) or valid(plan.get("images", []))
     if not items:
         return [images[i] for i in range(min(limit, len(images)))]
 
@@ -292,7 +297,7 @@ def create_thumbnail(
     skip_reason = ""
     if not _flag("CF_IMAGE_ENABLED", True):
         skip_reason = "الإنشاء عبر Cloudflare معطّل (CF_IMAGE_ENABLED)."
-    elif sensitive and _flag("CF_SKIP_SENSITIVE", True):
+    elif sensitive and _flag("CF_SKIP_SENSITIVE", False):
         skip_reason = "قصة حساسة: تُخطّى الصورة المولّدة بالذكاء الاصطناعي."
     elif not cloudflare_ai.is_configured():
         skip_reason = "مفاتيح Cloudflare غير مضبوطة."
