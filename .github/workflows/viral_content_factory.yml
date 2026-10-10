@@ -77,6 +77,10 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           VISION_PROVIDER: ${{ vars.VISION_PROVIDER }}
           ADD_IMAGE_TEXT: ${{ vars.ADD_IMAGE_TEXT }}
+          GEMINI_WRITER_API_KEY: ${{ secrets.GEMINI_WRITER_API_KEY }}
+          GEMINI_WRITER_MODEL: ${{ vars.GEMINI_WRITER_MODEL }}
+          WRITER_PROVIDER: ${{ vars.WRITER_PROVIDER }}
+          AI_REVIEW: ${{ vars.AI_REVIEW }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
         run: python main.py
