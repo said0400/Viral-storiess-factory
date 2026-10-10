@@ -382,6 +382,68 @@ def fallback_plan(count: int) -> dict[str, Any]:
     }
 
 
+def _parse_avoid(raw_avoid: Any) -> list[list[float]]:
+    avoid = []
+    if isinstance(raw_avoid, list):
+        for candidate in raw_avoid[:6]:
+            box = _norm_box(candidate, 0.02)
+            if box:
+                avoid.append(box)
+    return avoid
+
+
+def default_gallery(count: int) -> list[dict[str, Any]]:
+    """معرض احتياطي من الصور المنزّلة حين لا يحدده النموذج."""
+    return [
+        {
+            "index": i,
+            "kind": "photo",
+            "subject_box": [0.08, 0.08, 0.92, 0.92],
+            "avoid_boxes": [],
+        }
+        for i in range(max(0, min(count, 4)))
+    ]
+
+
+def _parse_gallery(raw: dict[str, Any], image_count: int) -> list[dict[str, Any]]:
+    """
+    قائمة صور معرض المقال: الصور الفوتوغرافية ولقطات الشاشة؛ الشعارات
+    والإعلانات تُستبعد؛ والمركّبة سلفًا لا تُضاف إلا إذا قلّت الصور الأخرى.
+    """
+    items, seen = [], set()
+    raw_gallery = raw.get("gallery")
+    if not isinstance(raw_gallery, list):
+        return []
+
+    for item in raw_gallery:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        if (
+            isinstance(idx, bool)
+            or not isinstance(idx, int)
+            or not 0 <= idx < image_count
+            or idx in seen
+        ):
+            continue
+        seen.add(idx)
+        kind = item.get("kind")
+        if kind not in VALID_KINDS:
+            kind = "photo"
+        items.append({
+            "index": idx,
+            "kind": kind,
+            "subject_box": _norm_box(item.get("subject_box"), 0.1)
+            or [0.05, 0.05, 0.95, 0.95],
+            "avoid_boxes": _parse_avoid(item.get("avoid_boxes")),
+        })
+
+    usable = [i for i in items if i["kind"] in ("photo", "screenshot")]
+    if len(usable) < 2:
+        usable += [i for i in items if i["kind"] == "composite"]
+    return usable[:4]
+
+
 def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
     """تنظيف خطة التصميم وإجبارها على التوافق مع الصور المتاحة."""
     if image_count < 1:
@@ -480,6 +542,7 @@ def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
     reason = raw.get("reason", "")
     brief = raw.get("thumbnail_brief", "")
     return {
+        "gallery": _parse_gallery(raw, image_count),
         "thumbnail_brief": (
             brief.strip()[:500] if isinstance(brief, str) else ""
         ),
