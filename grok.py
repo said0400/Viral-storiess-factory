@@ -478,7 +478,11 @@ def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
         inset_shape = "circle"
 
     reason = raw.get("reason", "")
+    brief = raw.get("thumbnail_brief", "")
     return {
+        "thumbnail_brief": (
+            brief.strip()[:500] if isinstance(brief, str) else ""
+        ),
         "layout": layout,
         "orientation": orientation,
         "main_side": main_side,
