@@ -1,0 +1,4 @@
+model: @cf/black-forest-labs/flux-2-klein-4b
+references: 4
+
+Professional YouTube thumbnail, 16:9 widescreen. Compose one striking image using the people and objects from the reference photos (image 0 is the main subject; images 1 to 3 are supporting subjects). Keep every person's face, identity, age, skin tone, hair and clothing exactly as in the references: do not change, beautify or invent faces, people or objects. A split view showing Cornell students protesting with handmade signs against sexual assault on one side, juxtaposed with the leaked blue text message thread on the other. Cinematic lighting, strong contrast, vivid but natural saturated colors, crisp focus on the main subject, soft blurred background, a clear focal point following the rule of thirds, subtle vignette. Keep the lower fifth of the frame calm and uncluttered so a headline can be added later. Photorealistic. No text, no letters, no captions, no logos, no watermarks, no borders, no frames.
