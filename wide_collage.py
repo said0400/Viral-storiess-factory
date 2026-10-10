@@ -514,3 +514,88 @@ def create_wide_collage(
         "size": list(size),
         "keepouts": scaled,
     }
+
+
+# ---------------------------------------------------------------------------
+# صورة المعرض: جمع 1 إلى 4 صور من المقال بلا نص ولا دوائر
+# ---------------------------------------------------------------------------
+
+def _fit_blur_tile(canvas, image, box):
+    """الصورة كاملة داخل الخانة فوق خلفية مموّهة. تعيد مستطيل الصورة."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    W, H = image.size
+
+    small = (max(8, w // 4), max(8, h // 4))
+    bg = ImageOps.fit(image, small, Image.Resampling.LANCZOS)
+    bg = bg.filter(ImageFilter.GaussianBlur(8 * SS))
+    bg = bg.resize((w, h), Image.Resampling.BICUBIC)
+    bg = ImageEnhance.Brightness(bg).enhance(0.55)
+    canvas.paste(bg, (x0, y0))
+
+    s = min(w / W, h / H)
+    fw, fh = max(1, round(W * s)), max(1, round(H * s))
+    fg = image.resize((fw, fh), Image.Resampling.LANCZOS)
+    ox, oy = x0 + (w - fw) // 2, y0 + (h - fh) // 2
+    canvas.paste(fg, (ox, oy))
+    return ox, oy, fw, fh
+
+
+def paste_gallery_tile(canvas, image, item, box, keep):
+    """قص ذكي للصور الجيدة، وعرض كامل للقطات الشاشة والصور التي ستُقص بشدة."""
+    w, h = box[2] - box[0], box[3] - box[1]
+    coverage = window_coverage(image, item, w, h)
+
+    if item.get("kind") == "screenshot" or coverage < 0.72:
+        ox, oy, fw, fh = _fit_blur_tile(canvas, image, box)
+        for b in item.get("avoid_boxes", []):
+            keep.append(((ox + b[0] * fw, oy + b[1] * fh,
+                          ox + b[2] * fw, oy + b[3] * fh), 6.0))
+    else:
+        paste_tile(canvas, image, item, box, keep)
+
+
+def create_gallery_collage(
+    images: list[Image.Image],
+    gallery: list[dict[str, Any]],
+    destination: Path,
+    size: tuple[int, int] = WIDE_SIZE,
+) -> dict[str, Any]:
+    """
+    يجمع صور المقال (1 إلى 4) في صورة 16:9 بلا نص: صورة واحدة، أو لوحتان،
+    أو ثلاث (كبيرة ولوحتان)، أو أربع في شبكة 2×2.
+    """
+    items = [
+        g for g in (gallery or [])
+        if 0 <= g.get("index", -1) < len(images) and g.get("subject_box")
+    ][:4]
+    if not items:
+        raise CollageError("لا توجد صور صالحة لمعرض المقال.")
+
+    CW, CH = size[0] * SS, size[1] * SS
+    count = len(items)
+    layout = {1: "single", 2: "two_panel", 3: "three_panel",
+              4: "four_grid"}[count]
+
+    canvas = Image.new("RGB", (CW, CH), GUTTER_COLOR)
+    keep: list = []
+
+    if count == 1:
+        paste_gallery_tile(canvas, images[items[0]["index"]], items[0],
+                           (0, 0, CW, CH), keep)
+    else:
+        for item, box in zip(items, panel_boxes(layout, CW, CH)):
+            paste_gallery_tile(canvas, images[item["index"]], item, box, keep)
+
+    final = canvas.resize(size, Image.Resampling.LANCZOS)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    final.save(destination, "JPEG", quality=92, optimize=True)
+
+    return {
+        "path": str(destination),
+        "layout": layout,
+        "count": count,
+        "images": [i["index"] for i in items],
+        "size": list(size),
+        "keepouts": [(tuple(v / SS for v in b), wt) for b, wt in keep],
+    }
