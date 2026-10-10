@@ -895,8 +895,8 @@ def layout_headline(words, font_path, width):
     shaped = [shape_word(w) for w in words]
     result = None
 
-    for max_lines, min_frac in ((2, 0.062), (3, 0.048)):
-        for size in range(int(width * 0.095), int(width * min_frac) - 1, -4):
+    for max_lines, min_frac in ((2, 0.052), (3, 0.044), (4, 0.038)):
+        for size in range(int(width * 0.078), int(width * min_frac) - 1, -2):
             font = ImageFont.truetype(
                 font_path, size, layout_engine=ImageFont.Layout.BASIC
             )
@@ -953,7 +953,7 @@ def add_headline(canvas, headline, highlight, keep):
               "تُخطي الكتابة على الصورة.")
         return None
 
-    words = clean_headline(headline).split()[:12]
+    words = clean_headline(headline).split()[:24]
     if not words:
         return None
 
@@ -1207,7 +1207,7 @@ def main():
             )
             create_design(
                 design_images, plan, out_dir / "facebook_image.jpg",
-                headline=rewritten.get("image_headline"),
+                headline=rewritten["title"],
                 highlight=rewritten.get("image_highlight"),
             )
             image_file = "facebook_image.jpg"
@@ -1231,7 +1231,7 @@ def main():
                 plan = fallback_plan(1)
                 create_design(
                     images[:1], plan, out_dir / "facebook_image.jpg",
-                    headline=rewritten.get("image_headline"),
+                    headline=rewritten["title"],
                     highlight=rewritten.get("image_highlight"),
                 )
                 image_file = "facebook_image.jpg"
@@ -1277,7 +1277,7 @@ def main():
         "hashtags": rewritten["hashtags"],
         "rewritten_article": rewritten["rewritten_article"],
         "image_file": image_file,
-        "image_headline": rewritten.get("image_headline"),
+        "image_text": rewritten["title"],
         "image_highlight": rewritten.get("image_highlight"),
         "image_count": len(images),
         "image_source_urls": used_urls,
