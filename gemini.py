@@ -200,6 +200,18 @@ def _convert_raw(raw: dict[str, Any]) -> dict[str, Any]:
             )
             if box is not None
         ]
+
+    for item in raw.get("gallery") or []:
+        if not isinstance(item, dict):
+            continue
+        item["subject_box"] = _to_xyxy(item.get("subject_box"))
+        avoid = item.get("avoid_boxes")
+        item["avoid_boxes"] = [
+            box for box in (
+                _to_xyxy(b) for b in (avoid if isinstance(avoid, list) else [])
+            )
+            if box is not None
+        ]
     return raw
 
 
@@ -333,6 +345,14 @@ def analyze_images(
 - لا تُدرج الصور الضبابية أو المكررة أو عديمة المعنى.
 - الصور غير "photo" ستُعرض وحدها كما هي ولن تُدمج مع غيرها.
 
+معرض صور المقال (gallery):
+- قائمة مستقلة عن "images": كل الصور الصالحة لعرضها على القارئ مجموعةً في
+  صورة واحدة (حتى 4)، مرتبة من الأهم إلى الأقل. قد تختلف عن قائمة "images".
+- أدرج الصور الفوتوغرافية ولقطات الشاشة. استبعد الشعارات والإعلانات
+  والصور الضبابية والمكررة وعديمة المعنى. الصور المركّبة سلفًا لا تُدرج
+  إلا إذا لم تتوفر صور كافية غيرها.
+- لكل صورة: index و kind و subject_box و avoid_boxes (وجوه الأشخاص).
+
 وصف الصورة المصغرة:
 - thumbnail_brief: وصف بالإنجليزية (جملة أو جملتان) لأفضل تكوين لصورة مصغرة
   احترافية 16:9 مبنية على هذه الصور: من يظهر، تعبيره، ترتيبه، الأجواء.
@@ -369,6 +389,12 @@ def analyze_images(
       "detail_box": [700, 400, 900, 600],
       "detail_label": "حذاء شفاف",
       "avoid_boxes": [[100, 380, 260, 620]]}}
+  ],
+  "gallery": [
+    {{"index": 0, "kind": "photo", "subject_box": [80, 120, 940, 880],
+      "avoid_boxes": [[100, 380, 260, 620]]}},
+    {{"index": 2, "kind": "screenshot", "subject_box": [0, 0, 1000, 1000],
+      "avoid_boxes": []}}
   ],
   "thumbnail_brief": "A close-up of the main subject looking at the camera, second person smaller in the background, tense mood.",
   "reason": "سبب بصري موجز"
