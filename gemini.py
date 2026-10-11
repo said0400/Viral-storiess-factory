@@ -357,6 +357,8 @@ def analyze_images(
 - thumbnail_brief: وصف بالإنجليزية (جملة أو جملتان) لأفضل تكوين لصورة مصغرة
   احترافية 16:9 مبنية على هذه الصور: من يظهر، تعبيره، ترتيبه، الأجواء.
   صِف ما يظهر في الصور فقط، ولا تخترع أحداثًا ولا أشخاصًا ولا نصوصًا.
+- thumbnail_background: وصف بالإنجليزية (جملة واحدة) لخلفية سينمائية بلا أي
+  أشخاص أو وجوه أو نصوص تناسب موضوع القصة: المكان والأجواء والإضاءة.
 
 قاعدة اختيار التخطيط (مهمة):
 - إذا كانت قصة المقال عن عنصر أو تفصيل محدد (حذاء، قطعة ملابس، شيء
@@ -396,6 +398,7 @@ def analyze_images(
     {{"index": 2, "kind": "screenshot", "subject_box": [0, 0, 1000, 1000],
       "avoid_boxes": []}}
   ],
+  "thumbnail_background": "A dim laboratory corridor with cold blue light and haze.",
   "thumbnail_brief": "A close-up of the main subject looking at the camera, second person smaller in the background, tense mood.",
   "reason": "سبب بصري موجز"
 }}
