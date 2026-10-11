@@ -1504,6 +1504,17 @@ def main():
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # نحافظ على بيانات النشر السابق على Blogger حتى يُحدَّث المقال لا يتكرر
+    previous_path = out_dir / "result.json"
+    if previous_path.is_file():
+        try:
+            previous = json.loads(previous_path.read_text(encoding="utf-8"))
+            if previous.get("blogger"):
+                result["blogger"] = previous["blogger"]
+        except (OSError, ValueError):
+            pass
+
     (out_dir / "result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
