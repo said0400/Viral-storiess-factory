@@ -1,9 +1,13 @@
 """
-الصورة الثانية (صورة المقال): صورة مصغرة احترافية 16:9 تُولَّد عبر Cloudflare
-من الصور المرجعية، ثم يُكتب عليها عنوان الصورة.
+الصورة الثانية (صورة المقال): صورة مصغرة احترافية 16:9.
 
-إن فشل Cloudflare (أو لم يُضبط، أو كانت القصة حساسة) تُستخدم الصورة الأولى
-(الدمج) كصورة للمقال ويُضاف عليها العنوان، وتبقى الصورة الأولى بلا نص.
+الوضع الافتراضي (hybrid): Cloudflare يولّد الخلفية والأجواء فقط (بلا أشخاص)،
+وتُقص الوجوه الحقيقية من صور المقال وتوضع فوقها، ثم يُكتب العنوان. فتبقى
+الملامح حقيقية. إن تعذّر Cloudflare تُستخدم خلفية مولّدة محليًا.
+THUMBNAIL_MODE=ai_full يعيد التوليد الكامل من الصور المرجعية (قد يغيّر الملامح).
+
+إن تعذّر القص كله تُستخدم الصورة الأولى (الدمج) كصورة للمقال مع العنوان،
+وتبقى الصورة الأولى بلا نص.
 """
 from __future__ import annotations
 
@@ -23,7 +27,9 @@ from PIL import (
 )
 
 import cloudflare_ai
+import thumbnail_design as design
 from cloudflare_ai import CloudflareError
+from grok import default_gallery
 
 try:
     import arabic_reshaper
@@ -267,14 +273,127 @@ def build_prompt(plan, n_refs):
 # الواجهة العامة
 # ---------------------------------------------------------------------------
 
-def _is_blank(image: Image.Image) -> bool:
+def _is_blank(image: Image.Image, threshold: float = 8.0) -> bool:
     small = image.convert("L").resize((64, 36))
-    return ImageStat.Stat(small).stddev[0] < 8.0
+    return ImageStat.Stat(small).stddev[0] < threshold
 
 
 def _save(image, destination: Path):
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, "JPEG", quality=92, optimize=True)
+
+
+BACKGROUND_PROMPT = (
+    "Cinematic dramatic background plate for a YouTube thumbnail, 16:9 "
+    "widescreen. {setting}Dark moody atmosphere with {palette} rim light and "
+    "soft glow, shallow depth of field, bokeh, volumetric light rays, rich "
+    "contrast. Keep the center and the lower area wide and open for "
+    "foreground subjects and a headline. No people, no faces, no figures, no "
+    "hands, no text, no letters, no logos, no watermarks. Photorealistic, "
+    "high detail."
+)
+
+
+def build_background_prompt(plan, color_name: str) -> str:
+    setting = (plan.get("thumbnail_background") or "").strip()
+    setting = (setting + " ") if setting else "An abstract moody studio backdrop. "
+    palette = f"{color_name} with a contrasting warm accent"
+    return BACKGROUND_PROMPT.format(setting=setting, palette=palette)
+
+
+def _cloudflare_skip_reason(sensitive: bool) -> str:
+    if not _flag("CF_IMAGE_ENABLED", True):
+        return "الإنشاء عبر Cloudflare معطّل (CF_IMAGE_ENABLED)."
+    if sensitive and _flag("CF_SKIP_SENSITIVE", False):
+        return "قصة حساسة: تُخطّى الصورة المولّدة بالذكاء الاصطناعي."
+    if not cloudflare_ai.is_configured():
+        return "مفاتيح Cloudflare غير مضبوطة."
+    return ""
+
+
+def _gallery_items(images, plan):
+    items = plan.get("gallery") or default_gallery(len(images))
+    return [i for i in items
+            if 0 <= i.get("index", -1) < len(images) and i.get("subject_box")]
+
+
+def _try_hybrid(images, plan, headline, highlight, destination,
+                prompt_file, cf_skip) -> dict[str, Any]:
+    """خلفية (Cloudflare أو محلية) + وجوه حقيقية مقصوصة + العنوان."""
+    items = _gallery_items(images, plan)
+    people, card = design.extract_subjects(images, items)
+    if not people and not card:
+        raise ThumbnailError("لم يُقص أي عنصر من الصور.")
+
+    used = [images[i["index"]] for i in items]
+    accent, color_name = design.dominant_accent(used)
+
+    background, bg_source, bg_reason = None, "local", ""
+    if cf_skip:
+        bg_reason = cf_skip
+    else:
+        try:
+            prompt = build_background_prompt(plan, color_name)
+            if prompt_file:
+                prompt_file.parent.mkdir(parents=True, exist_ok=True)
+                prompt_file.write_text(
+                    f"mode: hybrid (background only)\n"
+                    f"model: {cloudflare_ai.model_name()}\n\n{prompt}\n",
+                    encoding="utf-8")
+            generated = cloudflare_ai.generate_image(
+                prompt, [], THUMB_SIZE[0], THUMB_SIZE[1])
+            if _is_blank(generated, threshold=4.0):   # خلفية داكنة مقبولة
+                raise CloudflareError("الخلفية المولّدة فارغة تقريبًا.")
+            background = design.prepare_background(generated, THUMB_SIZE)
+            bg_source = "cloudflare"
+        except (CloudflareError, OSError, ValueError) as exc:
+            bg_reason = str(exc)
+            print(f"::warning title=فشل خلفية Cloudflare::{exc}")
+
+    if background is None:
+        background = design.procedural_background(THUMB_SIZE, accent)
+
+    canvas, keep = design.compose(background, people, card, accent)
+    text_info = add_headline(canvas, headline, highlight, keep=keep)
+    _save(canvas, destination)
+
+    return {
+        "file": destination.name,
+        "source": "hybrid_cloudflare" if bg_source == "cloudflare"
+        else "hybrid_local",
+        "background": bg_source,
+        "model": cloudflare_ai.model_name() if bg_source == "cloudflare" else None,
+        "reason": bg_reason,
+        "subjects": {"people": len(people), "card": bool(card)},
+        "text": text_info,
+    }
+
+
+def _try_ai_full(images, plan, headline, highlight, destination,
+                 prompt_file, cf_skip) -> dict[str, Any]:
+    """الوضع القديم: توليد كامل من صور مرجعية (قد يغيّر الملامح)."""
+    if cf_skip:
+        raise ThumbnailError(cf_skip)
+
+    refs = reference_images(images, plan)
+    prompt = build_prompt(plan, len(refs))
+    if prompt_file:
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text(
+            f"mode: ai_full\nmodel: {cloudflare_ai.model_name()}\n"
+            f"references: {len(refs)}\n\n{prompt}\n", encoding="utf-8")
+
+    generated = cloudflare_ai.generate_image(
+        prompt, refs, THUMB_SIZE[0], THUMB_SIZE[1])
+    if _is_blank(generated):
+        raise CloudflareError("الصورة المولّدة فارغة تقريبًا.")
+
+    text_info = add_headline(generated, headline, highlight,
+                             preferred_zone=calmer_zone(generated))
+    _save(generated, destination)
+    return {"file": destination.name, "source": "cloudflare_full",
+            "model": cloudflare_ai.model_name(), "reason": "",
+            "text": text_info}
 
 
 def create_thumbnail(
@@ -288,49 +407,24 @@ def create_thumbnail(
     sensitive: bool = False,
 ) -> dict[str, Any]:
     """
-    ينشئ thumbnail.jpg: Cloudflare أولًا، وإلا الصورة الأولى (الدمج) + العنوان.
-    يعيد معلومات المصدر: source = cloudflare | collage_fallback.
+    ينشئ thumbnail.jpg. source: hybrid_cloudflare | hybrid_local |
+    cloudflare_full | collage_fallback.
     """
-    info: dict[str, Any] = {"file": destination.name, "source": None,
-                            "model": None, "reason": "", "text": None}
+    mode = os.getenv("THUMBNAIL_MODE", "").strip().lower() or "hybrid"
+    cf_skip = _cloudflare_skip_reason(sensitive)
+    attempt = _try_ai_full if mode == "ai_full" else _try_hybrid
+    reason = ""
 
-    skip_reason = ""
-    if not _flag("CF_IMAGE_ENABLED", True):
-        skip_reason = "الإنشاء عبر Cloudflare معطّل (CF_IMAGE_ENABLED)."
-    elif sensitive and _flag("CF_SKIP_SENSITIVE", False):
-        skip_reason = "قصة حساسة: تُخطّى الصورة المولّدة بالذكاء الاصطناعي."
-    elif not cloudflare_ai.is_configured():
-        skip_reason = "مفاتيح Cloudflare غير مضبوطة."
-
-    if not skip_reason:
-        try:
-            refs = reference_images(images, plan)
-            prompt = build_prompt(plan, len(refs))
-            if prompt_file:
-                prompt_file.parent.mkdir(parents=True, exist_ok=True)
-                prompt_file.write_text(
-                    f"model: {cloudflare_ai.model_name()}\n"
-                    f"references: {len(refs)}\n\n{prompt}\n",
-                    encoding="utf-8")
-
-            generated = cloudflare_ai.generate_image(
-                prompt, refs, THUMB_SIZE[0], THUMB_SIZE[1])
-            if _is_blank(generated):
-                raise CloudflareError("الصورة المولّدة فارغة تقريبًا.")
-
-            zone = calmer_zone(generated)
-            text_info = add_headline(generated, headline, highlight,
-                                     preferred_zone=zone)
-            _save(generated, destination)
-            info.update(source="cloudflare", model=cloudflare_ai.model_name(),
-                        text=text_info)
-            return info
-        except (CloudflareError, OSError, ValueError) as exc:
-            info["reason"] = str(exc)
-            print(f"::warning title=فشل Cloudflare::{exc}")
-    else:
-        info["reason"] = skip_reason
-        print(f"تنبيه: {skip_reason}")
+    try:
+        return attempt(images, plan, headline, highlight, destination,
+                       prompt_file, cf_skip)
+    except (ThumbnailError, CloudflareError, design.CutoutError,
+            OSError, ValueError) as exc:
+        reason = str(exc)
+        print(f"::warning title=تعذر تصميم الصورة المصغرة::{exc}")
+    except Exception as exc:  # أي عطل غير متوقع لا يوقف المشروع
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"::warning title=عطل غير متوقع في الصورة المصغرة::{reason}")
 
     # --- الاحتياط: الصورة الأولى (الدمج) كصورة للمقال مع العنوان ---
     if not collage or not Path(collage["path"]).is_file():
@@ -341,5 +435,5 @@ def create_thumbnail(
     text_info = add_headline(base, headline, highlight,
                              keep=collage.get("keepouts", []))
     _save(base, destination)
-    info.update(source="collage_fallback", text=text_info)
-    return info
+    return {"file": destination.name, "source": "collage_fallback",
+            "model": None, "reason": reason, "text": text_info}
