@@ -541,7 +541,12 @@ def _validate_plan(raw: dict[str, Any], image_count: int) -> dict[str, Any]:
 
     reason = raw.get("reason", "")
     brief = raw.get("thumbnail_brief", "")
+    background = raw.get("thumbnail_background", "")
     return {
+        "thumbnail_background": (
+            background.strip()[:300]
+            if isinstance(background, str) else ""
+        ),
         "gallery": _parse_gallery(raw, image_count),
         "thumbnail_brief": (
             brief.strip()[:500] if isinstance(brief, str) else ""
