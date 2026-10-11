@@ -12,6 +12,16 @@ on:
         required: false
         default: false
         type: boolean
+      publish_to_blogger:
+        description: "النشر التلقائي على Blogger (ألغِه في تشغيلات الاختبار)"
+        required: false
+        default: true
+        type: boolean
+      blogger_label:
+        description: "تصنيف المقال في Blogger (موجود أو جديد؛ افصل بفاصلة لأكثر من تسمية)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -145,6 +155,51 @@ jobs:
           fi
 
           git commit -m "Generate article content"
+
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH"
+          git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Publish to Blogger
+        if: ${{ inputs.publish_to_blogger }}
+        continue-on-error: true
+        shell: bash
+        env:
+          OUT_DIR: ${{ steps.generate.outputs.out_dir }}
+          FORCE_REPROCESS: ${{ inputs.force_reprocess }}
+          BLOGGER_LABEL: ${{ inputs.blogger_label }}
+          BLOGGER_DRAFT: ${{ vars.BLOGGER_DRAFT }}
+          BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
+          BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
+          BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -euo pipefail
+          # الصور دُفعت في الخطوة السابقة؛ نستخدم commit الحالي في روابط CDN
+          export BLOGGER_COMMIT_SHA="$(git rev-parse HEAD)"
+          python blogger_publish.py
+
+      - name: Commit Blogger result
+        if: ${{ inputs.publish_to_blogger }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH="${GITHUB_REF_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A -- output/
+
+          if git diff --cached --quiet; then
+            echo "No Blogger result changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Save Blogger publish result"
 
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
