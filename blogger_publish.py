@@ -264,6 +264,40 @@ def public_image_url(repo: str, sha: str, rel_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# فحص صورة المقال كما يراها Blogger
+# ---------------------------------------------------------------------------
+
+def detect_display_image(token: str, blog_id: str, post_id: str) -> list[str]:
+    """
+    يسأل Blogger عن صور المقال التي تعرّف عليها (fetchImages). إن كانت القائمة
+    فارغة فالقوالب التي تعتمد على صورة Blogger لن تعرض مصغّرة للمقال.
+    نعيد المحاولة قليلًا لأن Blogger قد يحسبها بعد النشر بثوانٍ.
+    """
+    for attempt in range(3):
+        data = _api(
+            "GET", token, f"{API_BASE}/{blog_id}/posts/{post_id}",
+            params={"fetchImages": "true", "fields": "images"},
+        )
+        images = [i["url"] for i in data.get("images", []) or [] if i.get("url")]
+        if images:
+            return images
+        if attempt < 2:
+            time.sleep(6)
+    return []
+
+
+def report_images(images: list[str]) -> None:
+    if images:
+        print(f"تعرّف Blogger على {len(images)} صورة للمقال: {images[0]}")
+    else:
+        print(
+            "::warning title=صورة المقال::لم يتعرف Blogger على أي صورة في "
+            "المقال، فقد لا تظهر مصغّرة في قوائم القالب (آخر المشاركات وغيرها) "
+            "رغم ظهورها داخل المقال. السبب المحتمل: الصور مستضافة خارج Blogger."
+        )
+
+
+# ---------------------------------------------------------------------------
 # النشر
 # ---------------------------------------------------------------------------
 
@@ -281,6 +315,22 @@ def publish(out_dir: Path) -> dict[str, Any]:
     force = _flag("FORCE_REPROCESS")
     if previous.get("post_id") and not force:
         print(f"المقال منشور سابقًا ({previous.get('url')}); لا حاجة للنشر.")
+        try:
+            creds = credentials()
+            token = get_access_token(creds)
+            images = detect_display_image(
+                token, creds["BLOGGER_BLOG_ID"], previous["post_id"]
+            )
+            previous = dict(previous, blogger_images=images,
+                            image_checked_at_utc=datetime.now(
+                                timezone.utc).isoformat())
+            result["blogger"] = previous
+            result_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+            report_images(images)
+        except BloggerError as exc:
+            print(f"تنبيه: تعذر فحص صورة المقال: {exc}")
         return previous
 
     creds = credentials()
@@ -360,7 +410,14 @@ def publish(out_dir: Path) -> dict[str, Any]:
                     params={"isDraft": str(draft).lower(), "fields": fields})
         action = "insert"
 
+    try:
+        display_images = detect_display_image(token, blog_id, post.get("id"))
+    except BloggerError as exc:
+        print(f"تنبيه: تعذر فحص صورة المقال: {exc}")
+        display_images = None
+
     record = {
+        "blogger_images": display_images,
         "post_id": post.get("id"),
         "url": post.get("url"),
         "status": post.get("status"),
@@ -377,6 +434,8 @@ def publish(out_dir: Path) -> dict[str, Any]:
     )
     print(f"تم {'تحديث' if action == 'update' else 'نشر'} المقال: "
           f"{record['url']} ({record['status']})")
+    if display_images is not None:
+        report_images(display_images)
     return record
 
 
