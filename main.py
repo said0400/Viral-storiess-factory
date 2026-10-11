@@ -1031,6 +1031,137 @@ def add_headline(canvas, headline, highlight, keep):
     }
 
 
+def facebook_height() -> int:
+    """ارتفاع صورة فيسبوك: 4:5 افتراضيًا (1080×1350)، أو 3:4 (1080×1440)."""
+    ratio = os.getenv("FB_IMAGE_RATIO", "").strip().replace(".", ":").replace("/", ":")
+    if ratio == "3:4":
+        return round(IMAGE_SIZE * 4 / 3)
+    return round(IMAGE_SIZE * 5 / 4)
+
+
+def layout_for_band(words, font_path, width, band_h):
+    """أكبر خط يتسع فيه العنوان داخل شريط ارتفاعه band_h (حتى 4 أسطر)."""
+    max_w = width * 0.90
+    shaped = [shape_word(w) for w in words]
+    result = None
+
+    for size in range(int(width * 0.080), int(width * 0.036) - 1, -2):
+        font = ImageFont.truetype(
+            font_path, size, layout_engine=ImageFont.Layout.BASIC
+        )
+        space = font.getlength(" ") + size * 0.10
+        widths = [font.getlength(s) for s in shaped]
+
+        lines, line_widths, cur, cur_w = [], [], [], 0.0
+        for i, wd in enumerate(widths):
+            add = wd if not cur else space + wd
+            if cur and cur_w + add > max_w:
+                lines.append(cur)
+                line_widths.append(cur_w)
+                cur, cur_w = [i], wd
+            else:
+                cur.append(i)
+                cur_w += add
+        if cur:
+            lines.append(cur)
+            line_widths.append(cur_w)
+
+        line_h = int(size * 1.28)
+        bar_h = max(6, int(size * 0.10))
+        gap = int(size * 0.35)
+        content_h = bar_h + gap + line_h * len(lines)
+
+        result = {
+            "font": font, "size": size, "space": space, "shaped": shaped,
+            "widths": widths, "lines": lines, "line_widths": line_widths,
+            "line_h": line_h, "bar_h": bar_h, "gap": gap,
+            "content_h": content_h,
+        }
+        if (
+            len(lines) <= 4
+            and max(line_widths) <= max_w
+            and content_h <= band_h * 0.92
+        ):
+            return result
+    return result
+
+
+def add_title_band(picture, headline, highlight):
+    """
+    يمدّ الصورة إلى مقاس منشور فيسبوك (4:5 أو 3:4): الصورة في الأعلى كما هي،
+    وأسفلها شريط داكن فارغ يُكتب فيه العنوان، فلا يغطي النص أي جزء منها.
+    يعيد (الصورة النهائية، معلومات النص أو None).
+    """
+    W, S = picture.size
+    H = facebook_height()
+    band_h = H - S
+
+    # لون الشريط: لون أسفل الصورة معتّمًا، بتدرج خفيف
+    r, g, b = picture.crop((0, int(S * 0.92), W, S)).resize(
+        (1, 1), Image.Resampling.LANCZOS
+    ).getpixel((0, 0))
+    top_c = tuple(max(14, int(c * 0.30)) for c in (r, g, b))
+    bot_c = tuple(max(8, int(c * 0.14)) for c in (r, g, b))
+    grad = Image.linear_gradient("L").resize((W, band_h))
+    band = Image.composite(
+        Image.new("RGB", (W, band_h), bot_c),
+        Image.new("RGB", (W, band_h), top_c),
+        grad,
+    )
+
+    canvas = Image.new("RGB", (W, H))
+    canvas.paste(picture, (0, 0))
+    canvas.paste(band, (0, S))
+
+    if not headline:
+        return canvas, None
+    if not ARABIC_TEXT_OK:
+        print("::warning title=النص العربي::مكتبتا arabic-reshaper و "
+              "python-bidi غير مثبتتين؛ يبقى الشريط فارغًا.")
+        return canvas, None
+    font_path = find_font_path()
+    if not font_path:
+        print("::warning title=النص العربي::لم يُعثر على خط عربي.")
+        return canvas, None
+
+    words = clean_headline(headline).split()[:24]
+    if not words:
+        return canvas, None
+    lay = layout_for_band(words, font_path, W, band_h)
+    if lay is None:
+        return canvas, None
+
+    draw = ImageDraw.Draw(canvas)
+    top = S + (band_h - lay["content_h"]) // 2
+
+    bar_w = int(W * 0.12)
+    draw.rounded_rectangle(
+        ((W - bar_w) // 2, top, (W + bar_w) // 2, top + lay["bar_h"]),
+        radius=lay["bar_h"] // 2, fill=TEXT_ACCENT,
+    )
+
+    def norm(word):
+        return re.sub(r"[^\w]", "", word, flags=re.UNICODE)
+
+    marked = {norm(w) for w in clean_headline(highlight).split()} - {""}
+    y = top + lay["bar_h"] + lay["gap"]
+    for line, line_w in zip(lay["lines"], lay["line_widths"]):
+        x = (W + line_w) / 2           # الكتابة من اليمين إلى اليسار
+        for idx in line:
+            x -= lay["widths"][idx]
+            color = TEXT_ACCENT if norm(words[idx]) in marked else "white"
+            draw.text((x, y), lay["shaped"][idx], font=lay["font"],
+                      fill=color)
+            x -= lay["space"]
+        y += lay["line_h"]
+
+    return canvas, {
+        "text": " ".join(words), "zone": "band",
+        "font": Path(font_path).name, "font_size": lay["size"],
+        "lines": len(lay["lines"]), "size": [W, H],
+    }
+
+
 def create_design(
     images, plan, destination: Path, headline=None, highlight=None
 ):
@@ -1081,14 +1212,14 @@ def create_design(
     text_enabled = os.getenv("ADD_IMAGE_TEXT", "").strip().lower() not in {
         "0", "false", "no", "off",
     }
-    if headline and text_enabled:
-        scaled = [
-            (tuple(v / SS for v in box), weight) for box, weight in keep
-        ]
-        info = add_headline(canvas, headline, highlight or "", scaled)
-        if info:
-            source_plan["headline"] = info
-            print(f"النص على الصورة: {info['text']} ({info['zone']})")
+    canvas, info = add_title_band(
+        canvas,
+        headline if (headline and text_enabled) else None,
+        highlight or "",
+    )
+    if info:
+        source_plan["headline"] = info
+        print(f"النص على الصورة: {info['text']} (شريط سفلي)")
     destination.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(destination, "JPEG", quality=93, optimize=True)
     return destination
