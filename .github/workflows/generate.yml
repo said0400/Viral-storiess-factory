@@ -44,6 +44,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install arabic-reshaper python-bidi
+          python -m pip install rembg onnxruntime
+
+      - name: Cache rembg models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rembg
+            ~/.u2net
+          key: rembg-models-v1
 
       - name: Ensure Arabic font
         shell: bash
@@ -86,6 +95,8 @@ jobs:
           CF_IMAGE_MODEL: ${{ vars.CF_IMAGE_MODEL }}
           CF_IMAGE_ENABLED: ${{ vars.CF_IMAGE_ENABLED }}
           CF_SKIP_SENSITIVE: ${{ vars.CF_SKIP_SENSITIVE }}
+          THUMBNAIL_MODE: ${{ vars.THUMBNAIL_MODE }}
+          REMBG_MODEL: ${{ vars.REMBG_MODEL }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
         run: python main.py
