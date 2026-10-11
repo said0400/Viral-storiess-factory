@@ -1,0 +1,4 @@
+mode: hybrid (background only)
+model: @cf/black-forest-labs/flux-2-klein-4b
+
+Cinematic dramatic background plate for a YouTube thumbnail, 16:9 widescreen. A dark courtroom setting with warm wooden paneling and focused ambient lighting. Dark moody atmosphere with teal with a contrasting warm accent rim light and soft glow, shallow depth of field, bokeh, volumetric light rays, rich contrast. Keep the center and the lower area wide and open for foreground subjects and a headline. No people, no faces, no figures, no hands, no text, no letters, no logos, no watermarks. Photorealistic, high detail.
