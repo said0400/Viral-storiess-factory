@@ -208,6 +208,19 @@ def markdown_to_html(markdown: str, resolve_src=lambda s: s) -> str:
     return "\n".join(out)
 
 
+def place_toc(body_html: str) -> str:
+    """
+    يضع حاوية جدول المحتويات (tocDiv) بعد المقدمة مباشرة، قبل أول عنوان فرعي
+    أو أول صورة. قالب المدونة يضيف الجدول أعلى المقال تلقائيًا إلا إذا وجد
+    الكلمة tocDiv في نص المقال، فيستعمل موضعنا بدلًا من موضعه.
+    """
+    match = re.search(r'<h[2-4][ >]|<div class="separator"', body_html)
+    if not match:
+        return body_html
+    return (body_html[:match.start()] + '<div id="tocDiv"></div>\n'
+            + body_html[match.start():])
+
+
 def build_post_html(
     markdown: str, thumbnail_url: str | None, thumbnail_alt: str,
     resolve_src=lambda s: s,
@@ -215,7 +228,7 @@ def build_post_html(
     parts = []
     if thumbnail_url:
         parts.append(figure(thumbnail_url, thumbnail_alt))
-    parts.append(markdown_to_html(markdown, resolve_src))
+    parts.append(place_toc(markdown_to_html(markdown, resolve_src)))
     return (
         '<div dir="rtl" style="text-align: right;">\n'
         + "\n".join(parts)
