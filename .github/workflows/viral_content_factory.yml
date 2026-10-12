@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       article_url:
-        description: "ضع رابط المقال الأصلي"
-        required: true
+        description: "رابط المقال الأصلي (اتركه فارغًا ليختار النظام قصة تلقائيًا)"
+        required: false
+        default: ""
         type: string
       force_reprocess:
         description: "إعادة معالجة الرابط حتى لو عولج سابقًا"
@@ -18,7 +19,7 @@ on:
         default: true
         type: boolean
       blogger_label:
-        description: "تصنيف المقال في Blogger (موجود أو جديد؛ افصل بفاصلة لأكثر من تسمية)"
+        description: "تصنيف المقال في Blogger (فارغ = تصنيف الذكاء الاصطناعي عند الاختيار التلقائي)"
         required: false
         default: ""
         type: string
@@ -34,7 +35,7 @@ jobs:
   generate:
     name: Generate Arabic Content and Image
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -84,10 +85,23 @@ jobs:
             exit 1
           fi
 
+      - name: Pick story automatically
+        id: pick
+        if: ${{ inputs.article_url == '' }}
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_WRITER_API_KEY: ${{ secrets.GEMINI_WRITER_API_KEY }}
+          GEMINI_WRITER_MODEL: ${{ vars.GEMINI_WRITER_MODEL }}
+          WRITER_PROVIDER: ${{ vars.WRITER_PROVIDER }}
+          PYTHONUNBUFFERED: "1"
+        run: python picker.py
+
       - name: Generate content
         id: generate
         env:
-          ARTICLE_URL: ${{ inputs.article_url }}
+          ARTICLE_URL: ${{ inputs.article_url || steps.pick.outputs.article_url }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
@@ -167,7 +181,7 @@ jobs:
         env:
           OUT_DIR: ${{ steps.generate.outputs.out_dir }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
-          BLOGGER_LABEL: ${{ inputs.blogger_label }}
+          BLOGGER_LABEL: ${{ inputs.blogger_label || steps.pick.outputs.category }}
           BLOGGER_DRAFT: ${{ vars.BLOGGER_DRAFT }}
           BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
           BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
