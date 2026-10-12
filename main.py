@@ -38,6 +38,7 @@ import gemini
 import thumbnail
 import wide_collage
 import writer
+import related
 from grok import (
     MAX_VISION_IMAGES,
     default_gallery,
@@ -1367,11 +1368,19 @@ def main():
     print("روابط الصور المكتشفة:", len(article["image_urls"]))
 
     print("2/6: كتابة المقال والمنشور وحزمة SEO...")
+    content_category = os.getenv("CONTENT_CATEGORY", "").strip()
+    related_articles = related.published_articles(
+        category=content_category,
+        exclude_source=article["source_url"],
+    )
+    print("مقالات سابقة متاحة للربط:", len(related_articles))
     try:
         rewritten = writer.write_article(
             article_title=article["title"],
             article_text=article["text"],
             source_url=article["source_url"],
+            category=content_category,
+            related=related_articles,
         )
     except writer.WriterError as exc:
         raise ProjectError(f"فشلت كتابة المقال: {exc}") from exc
@@ -1454,6 +1463,10 @@ def main():
         out_dir / "facebook_post.txt", writer.build_post_text(rewritten)
     )
     write_text_file(
+        out_dir / "first_comment.txt",
+        writer.build_first_comment_text(rewritten),
+    )
+    write_text_file(
         out_dir / "rewritten_article.md",
         writer.build_markdown(
             rewritten,
@@ -1475,6 +1488,9 @@ def main():
         "original_title": article["title"],
         "title": rewritten["title"],
         "facebook_post": rewritten["facebook_post"],
+        "first_comment": rewritten["first_comment"],
+        "category": rewritten["category"],
+        "related_articles": rewritten.get("related_used", []),
         "hashtags": rewritten["hashtags"],
         "rewritten_article": rewritten["rewritten_article"],
         "alt_titles": rewritten["alt_titles"],
@@ -1529,6 +1545,7 @@ def main():
         "thumbnail.jpg",
         "thumbnail_prompt.txt",
         "facebook_post.txt",
+        "first_comment.txt",
         "rewritten_article.md",
         "seo.txt",
         "editor_notes.txt",
