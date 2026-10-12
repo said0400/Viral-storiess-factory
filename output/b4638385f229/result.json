@@ -188,5 +188,21 @@
   },
   "image_note": "",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@ba199d602e0cf9fe8f2b11495c41241ccd1d9902/output/b4638385f229/thumbnail.jpg"
+    ],
+    "post_id": "3482078055670171405",
+    "url": "https://atar12345a.blogspot.com/2026/10/blog-post_159.html",
+    "status": "LIVE",
+    "labels": [],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@ba199d602e0cf9fe8f2b11495c41241ccd1d9902/output/b4638385f229/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@ba199d602e0cf9fe8f2b11495c41241ccd1d9902/output/b4638385f229/article_middle.jpg"
+    },
+    "commit": "ba199d602e0cf9fe8f2b11495c41241ccd1d9902",
+    "published_at_utc": "2026-10-12T22:13:34.923710+00:00"
+  }
 }
