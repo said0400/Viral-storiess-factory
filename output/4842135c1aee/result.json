@@ -229,5 +229,23 @@
   },
   "image_note": "",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@18dfb96141a77bbba0aef3766103f3c70a426603/output/4842135c1aee/thumbnail.jpg"
+    ],
+    "post_id": "989369619873801409",
+    "url": "https://atar12345a.blogspot.com/2026/10/blog-post_12.html",
+    "status": "LIVE",
+    "labels": [
+      "غرائب وعجائب"
+    ],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@18dfb96141a77bbba0aef3766103f3c70a426603/output/4842135c1aee/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@18dfb96141a77bbba0aef3766103f3c70a426603/output/4842135c1aee/article_middle.jpg"
+    },
+    "commit": "18dfb96141a77bbba0aef3766103f3c70a426603",
+    "published_at_utc": "2026-10-12T09:21:06.291420+00:00"
+  }
 }
