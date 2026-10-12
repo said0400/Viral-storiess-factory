@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       article_url:
-        description: "رابط المقال الأصلي (اتركه فارغًا ليختار النظام قصة تلقائيًا)"
+        description: "ضع رابط المقال الأصلي (اتركه فارغًا ليختار النظام قصة تلقائيًا)"
         required: false
         default: ""
         type: string
@@ -19,7 +19,7 @@ on:
         default: true
         type: boolean
       blogger_label:
-        description: "تصنيف المقال في Blogger (فارغ = تصنيف الذكاء الاصطناعي عند الاختيار التلقائي)"
+        description: "تصنيف المقال في Blogger (موجود أو جديد؛ افصل بفاصلة لأكثر من تسمية)"
         required: false
         default: ""
         type: string
@@ -35,7 +35,7 @@ jobs:
   generate:
     name: Generate Arabic Content and Image
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -102,6 +102,7 @@ jobs:
         id: generate
         env:
           ARTICLE_URL: ${{ inputs.article_url || steps.pick.outputs.article_url }}
+          CONTENT_CATEGORY: ${{ steps.pick.outputs.category }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
@@ -181,7 +182,7 @@ jobs:
         env:
           OUT_DIR: ${{ steps.generate.outputs.out_dir }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
-          BLOGGER_LABEL: ${{ inputs.blogger_label || steps.pick.outputs.category }}
+          BLOGGER_LABEL: ${{ inputs.blogger_label }}
           BLOGGER_DRAFT: ${{ vars.BLOGGER_DRAFT }}
           BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
           BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
