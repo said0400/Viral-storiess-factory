@@ -7,6 +7,9 @@
   (واجهة Blogger لا ترفع الصور).
 - التصنيف = تسمية (Label): تُطابق الموجود دون حساسية لحالة الأحرف وإلا تُنشأ.
 - إن كان للرابط مقال منشور سابقًا يُحدَّث بدل إنشاء مقال مكرر.
+- الروابط الداخلية في المقال (اقرأ أيضًا) تُحوَّل من Markdown إلى روابط HTML.
+- التعليق الأول (first_comment.txt) يُعبَّأ برابط المقال الحقيقي بعد النشر.
+- إن لم يُحدَّد BLOGGER_LABEL يُستعمل تصنيف الذكاء الاصطناعي المحفوظ في result.json.
 
 التشغيل: python blogger_publish.py (من جذر المستودع، بعد دفع المخرجات).
 """
@@ -29,6 +32,9 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_BASE = "https://www.googleapis.com/blogger/v3/blogs"
 REQUEST_TIMEOUT = 60
 RETRY_STATUS = {429, 500, 502, 503, 504}
+
+# تصنيف افتراضي: لا يُنشر المقال بلا تسمية أبدًا
+DEFAULT_LABEL = "غرائب وعجائب"
 
 
 class BloggerError(Exception):
@@ -166,6 +172,9 @@ def _inline(text: str) -> str:
     text = html.escape(text, quote=False)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<em>\1</em>", text)
+    # روابط Markdown (للربط الداخلي بالمقالات السابقة): [نص](https://...)
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+                  r'<a href="\2">\1</a>', text)
     return text
 
 
@@ -318,6 +327,20 @@ def _strip_h1(markdown: str) -> str:
     return re.sub(r"^\s*#\s+[^\n]*\n+", "", markdown, count=1)
 
 
+def fill_first_comment(
+    out_dir: Path, result: dict[str, Any], url: str | None
+) -> None:
+    """يضع رابط المقال الحقيقي مكان {LINK} في first_comment.txt بعد النشر."""
+    comment = result.get("first_comment")
+    if not comment or not url:
+        return
+    (out_dir / "first_comment.txt").write_text(
+        str(comment).replace("{LINK}", url).rstrip() + "\n",
+        encoding="utf-8",
+    )
+    print("تم تحديث first_comment.txt برابط المقال.")
+
+
 def publish(out_dir: Path) -> dict[str, Any]:
     result_path = out_dir / "result.json"
     if not result_path.is_file():
@@ -328,6 +351,7 @@ def publish(out_dir: Path) -> dict[str, Any]:
     force = _flag("FORCE_REPROCESS")
     if previous.get("post_id") and not force:
         print(f"المقال منشور سابقًا ({previous.get('url')}); لا حاجة للنشر.")
+        fill_first_comment(out_dir, result, previous.get("url"))
         try:
             creds = credentials()
             token = get_access_token(creds)
@@ -384,6 +408,9 @@ def publish(out_dir: Path) -> dict[str, Any]:
     blog_id = creds["BLOGGER_BLOG_ID"]
 
     requested = os.getenv("BLOGGER_LABEL", "").strip()
+    if not requested:
+        # لا تصنيف يدوي: نستعمل تصنيف الذكاء الاصطناعي المحفوظ في result.json
+        requested = str(result.get("category") or "").strip()
     labels: list[str] = []
     if requested:
         try:
@@ -393,6 +420,10 @@ def publish(out_dir: Path) -> dict[str, Any]:
             labels = resolve_labels(requested, [])
     else:
         print("تنبيه: لم يُحدَّد تصنيف؛ يُنشر المقال بلا تسمية.")
+    if not labels:
+        # شبكة أمان أخيرة: لا يُنشر المقال بلا تصنيف
+        labels = [DEFAULT_LABEL]
+        print(f"تنبيه: لا تصنيف متاح؛ استُخدم التصنيف الافتراضي «{DEFAULT_LABEL}».")
 
     draft = _flag("BLOGGER_DRAFT")
     body = {"kind": "blogger#post", "title": title, "content": content,
@@ -440,6 +471,10 @@ def publish(out_dir: Path) -> dict[str, Any]:
         "commit": sha,
         "published_at_utc": datetime.now(timezone.utc).isoformat(),
     }
+    fill_first_comment(out_dir, result, record["url"])
+    if record["status"] == "DRAFT":
+        print("::warning title=مقال بحالة مسودة::رابط التعليق الأول لن يفتحه "
+              "الزوار حتى يُنشر المقال.")
     result["blogger"] = record
     result_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
