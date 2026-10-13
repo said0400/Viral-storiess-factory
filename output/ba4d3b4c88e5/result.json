@@ -145,5 +145,23 @@
   },
   "image_note": "تعذر إكمال التحليل البصري أو تطبيق التصميم: Gemini: خطأ Gemini HTTP 503 (gemini-3.5-flash): {\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}\n | Groq: خطأ Groq HTTP 413: {\"error\":{\"message\":\"Request too large for model `qwen/qwen3.8-27b` in organization `org_01krd8qd8eey8bd3bjd4b01fpz` service tier `on_demand` on input tokens per minute (ITPM): Limit 7000, Requested 7066, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing\",\"type\":\"tokens\",\"code\":\"rate_limit_exceeded\"}}\n استُخدم تصميم احتياطي محلي دون تحليل بصري ناجح.",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@10b83a10bdb51b7f265460755ebe283743b25559/output/ba4d3b4c88e5/thumbnail.jpg"
+    ],
+    "post_id": "9033756516430292950",
+    "url": "https://atar12345a.blogspot.com/2026/10/blog-post_906.html",
+    "status": "LIVE",
+    "labels": [
+      "تريند"
+    ],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@10b83a10bdb51b7f265460755ebe283743b25559/output/ba4d3b4c88e5/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@10b83a10bdb51b7f265460755ebe283743b25559/output/ba4d3b4c88e5/article_middle.jpg"
+    },
+    "commit": "10b83a10bdb51b7f265460755ebe283743b25559",
+    "published_at_utc": "2026-10-13T22:52:58.525619+00:00"
+  }
 }
