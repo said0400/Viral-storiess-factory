@@ -26,6 +26,9 @@ CATEGORIES = [
     "حول العالم",
 ]
 
+# تصنيف افتراضي: لا يُترك المقال بلا تصنيف أبدًا
+DEFAULT_CATEGORY = CATEGORIES[0]
+
 # الربط الداخلي بالمقالات السابقة
 RELATED_LINE = re.compile(r"(?m)^[ \t]*\[\[RELATED:\s*(\d+)\s*\]\][ \t]*$")
 RELATED_TOKEN = re.compile(r"\[\[RELATED:\s*(\d+)\s*\]\]")
@@ -343,6 +346,25 @@ def _slug(value: Any) -> str:
     return slug[:70] or "article"
 
 
+def _match_category(value: str) -> str:
+    """يطابق تصنيفًا كتبه النموذج بصياغة قريبة (مسافات، تشكيل، جزء من الاسم)."""
+    def squash(text: str) -> str:
+        return re.sub(r"\s+", "", _plain(text))
+
+    key = squash(value)
+    if not key:
+        return ""
+    for name in CATEGORIES:
+        if key == squash(name):
+            return name
+    if len(key) >= 4:
+        for name in CATEGORIES:
+            n = squash(name)
+            if key in n or n in key:
+                return name
+    return ""
+
+
 def _normalize_comment(value: Any) -> str:
     """التعليق الأول: بلا روابط حقيقية، و{LINK} مرة واحدة في آخره."""
     comment = _URL.sub("", str(value or "")).strip()
@@ -456,7 +478,7 @@ def normalize(
     elif model_category in CATEGORIES:
         final_category = model_category
     else:
-        final_category = ""
+        final_category = _match_category(model_category) or DEFAULT_CATEGORY
 
     return {
         "title": title,
