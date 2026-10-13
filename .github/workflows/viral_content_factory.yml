@@ -23,6 +23,11 @@ on:
         required: false
         default: ""
         type: string
+      send_whatsapp:
+        description: "إرسال صورة المنشور ونصه والتعليق الأول إلى واتساب (GREEN-API)"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -219,3 +224,17 @@ jobs:
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
           git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Send package to WhatsApp (GREEN-API)
+        if: ${{ inputs.send_whatsapp }}
+        continue-on-error: true
+        shell: bash
+        env:
+          OUT_DIR: ${{ steps.generate.outputs.out_dir }}
+          GREENAPI_ID_INSTANCE: ${{ secrets.GREENAPI_ID_INSTANCE }}
+          GREENAPI_API_TOKEN: ${{ secrets.GREENAPI_API_TOKEN }}
+          GREENAPI_CHAT_ID: ${{ secrets.GREENAPI_CHAT_ID }}
+          GREENAPI_API_URL: ${{ vars.GREENAPI_API_URL }}
+          GREENAPI_MEDIA_URL: ${{ vars.GREENAPI_MEDIA_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: python whatsapp_notify.py
