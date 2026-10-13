@@ -144,5 +144,23 @@
   },
   "image_note": "تعذر إكمال التحليل البصري أو تطبيق التصميم: Gemini: خطأ Gemini HTTP 429 (gemini-3.5-flash): {\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.6-flash\\nPlease retry in 27m36.610756942s.\",\n    \"status\": \"RESOURCE_EXHAUSTED\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.Help\",\n        \"links\": [\n          {\n            \"description\": \"Learn more about Gemini API quotas\",\n            \"url\": \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n          }\n        ]\n      },\n      {\n        \"@type\" | Groq: خطأ Groq HTTP 413: {\"error\":{\"message\":\"Request too large for model `qwen/qwen3.8-27b` in organization `org_01krd8qd8eey8bd3bjd4b01fpz` service tier `on_demand` on input tokens per minute (ITPM): Limit 7000, Requested 7063, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing\",\"type\":\"tokens\",\"code\":\"rate_limit_exceeded\"}}\n استُخدم تصميم احتياطي محلي دون تحليل بصري ناجح.",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@954b6baa7f2316d21b96a24275e9a3a290591f41/output/5569bd83cc27/thumbnail.jpg"
+    ],
+    "post_id": "6023425408137385874",
+    "url": "https://atar12345a.blogspot.com/2026/10/3156.html",
+    "status": "LIVE",
+    "labels": [
+      "غرائب وعجائب"
+    ],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@954b6baa7f2316d21b96a24275e9a3a290591f41/output/5569bd83cc27/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@954b6baa7f2316d21b96a24275e9a3a290591f41/output/5569bd83cc27/article_middle.jpg"
+    },
+    "commit": "954b6baa7f2316d21b96a24275e9a3a290591f41",
+    "published_at_utc": "2026-10-13T23:32:51.139793+00:00"
+  }
 }
