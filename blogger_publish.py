@@ -33,8 +33,8 @@ API_BASE = "https://www.googleapis.com/blogger/v3/blogs"
 REQUEST_TIMEOUT = 60
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
-# تصنيف افتراضي: لا يُنشر المقال بلا تسمية أبدًا
-DEFAULT_LABEL = "غرائب وعجائب"
+# تصنيف افتراضي: لا يُنشر المقال بلا تسمية أبدًا (مصدر موحد في categories.py)
+from categories import DEFAULT_CATEGORY as DEFAULT_LABEL  # noqa: E402
 
 
 class BloggerError(Exception):
