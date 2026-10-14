@@ -150,25 +150,33 @@ def check_authorized(cfg: dict[str, str]) -> None:
         )
 
 
+def _confirm(result: Any, what: str) -> Any:
+    """GREEN-API يعيد idMessage عند قبول الرسالة؛ غيابه يعني أنها قد لا تكون أُرسلت."""
+    if not isinstance(result, dict) or not result.get("idMessage"):
+        print(f"::warning title=واتساب::لم يؤكد GREEN-API إرسال {what} "
+              "(لا idMessage في الرد)؛ تحقق من وصولها.")
+    return result
+
+
 def send_text(cfg: dict[str, str], text: str) -> Any:
     url = (f"{cfg['api_url']}/waInstance{cfg['id']}"
            f"/sendMessage/{cfg['token']}")
-    return _request(
+    return _confirm(_request(
         "POST", url, cfg,
         json={"chatId": cfg["chat"], "message": text[:MAX_TEXT]},
-    )
+    ), "رسالة نصية")
 
 
 def send_image(cfg: dict[str, str], path: Path, caption: str) -> Any:
     url = (f"{cfg['media_url']}/waInstance{cfg['id']}"
            f"/sendFileByUpload/{cfg['token']}")
     data = path.read_bytes()
-    return _request(
+    return _confirm(_request(
         "POST", url, cfg,
         data={"chatId": cfg["chat"], "fileName": path.name,
               "caption": caption},
         files={"file": (path.name, data, "image/jpeg")},
-    )
+    ), "الصورة")
 
 
 # ---------------------------------------------------------------------------
