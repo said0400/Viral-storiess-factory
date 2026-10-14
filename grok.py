@@ -18,7 +18,7 @@ DEFAULT_TEXT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
 
 REQUEST_TIMEOUT = 180
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 5          # صبر أطول عند حدود المعدل (429) والازدحام
 MAX_VISION_IMAGES = 3  # حد النموذج: 3 صور في الطلب الواحد
 
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -102,7 +102,14 @@ def _request(payload: dict[str, Any]) -> dict[str, Any]:
                 raise GrokError(last_error)
 
         if attempt < MAX_ATTEMPTS:
-            wait_seconds = min(3 * attempt, 10)
+            wait_seconds = min(8 * 2 ** (attempt - 1), 60)
+            # إن ذكرت Groq مدة الانتظار (try again in 7.5s) نحترمها
+            hinted = re.search(
+                r"try again in (\d+(?:\.\d+)?)(ms|s|m)\b", last_error
+            )
+            if hinted:
+                seconds = float(hinted.group(1)) * {"ms": 0.001, "s": 1, "m": 60}[hinted.group(2)]
+                wait_seconds = max(wait_seconds, min(int(seconds) + 2, 90))
             print(
                 f"تحذير: محاولة Groq {attempt} فشلت؛ "
                 f"إعادة المحاولة بعد {wait_seconds} ثوانٍ."
@@ -808,6 +815,11 @@ def _is_size_error(exc: Exception) -> bool:
     )
 
 
+def _images_for_attempt(number: int) -> int:
+    """المحاولة 1 و2: كل الصور. ثم صورتان، ثم صورة واحدة."""
+    return {1: MAX_VISION_IMAGES, 2: MAX_VISION_IMAGES, 3: 2}.get(number, 1)
+
+
 def analyze_images(
     images: list[Image.Image],
     article_title: str = "",
@@ -821,12 +833,14 @@ def analyze_images(
         (768, 600),   # صور 768px + مقتطف 600 حرف
         (512, 0),     # صور 512px + العنوان فقط
     ]
+    # محاولات إضافية أصغر حجمًا حين يتجاوز الطلب حد Groq بفارق بسيط
+    attempts += [(384, 0), (256, 0)]
     last_error: Exception | None = None
 
     for number, (max_side, context_chars) in enumerate(attempts, 1):
         try:
             plan = _analyze_once(
-                images, article_title, article_summary,
+                images[:_images_for_attempt(number)], article_title, article_summary,
                 max_side, context_chars,
             )
             try:
