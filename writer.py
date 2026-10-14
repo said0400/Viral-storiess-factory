@@ -17,17 +17,8 @@ STYLE_FILE = Path(__file__).resolve().parent / "prompts" / "article_style.txt"
 
 LINK_PLACEHOLDER = "{LINK}"
 
-# التصنيفات الخمسة
-CATEGORIES = [
-    "غرائب وعجائب",
-    "معجزات ونجاة",
-    "قصص إنسانية وواقعية",
-    "تريند",
-    "حول العالم",
-]
-
-# تصنيف افتراضي: لا يُترك المقال بلا تصنيف أبدًا
-DEFAULT_CATEGORY = CATEGORIES[0]
+# التصنيفات الخمسة (مصدر موحد في categories.py)
+from categories import CATEGORIES, DEFAULT_CATEGORY  # noqa: E402
 
 # الربط الداخلي بالمقالات السابقة
 RELATED_LINE = re.compile(r"(?m)^[ \t]*\[\[RELATED:\s*(\d+)\s*\]\][ \t]*$")
