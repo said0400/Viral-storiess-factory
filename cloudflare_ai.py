@@ -21,16 +21,26 @@ from PIL import Image, ImageOps
 
 API_BASE = "https://api.cloudflare.com/client/v4/accounts"
 DEFAULT_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
+# نموذج احتياطي (نص إلى صورة، طلب JSON) يُستعمل حين يرفض النموذج الأول الطلب
+DEFAULT_FALLBACK_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 MAX_REFERENCES = 4
 REFERENCE_MAX_SIDE = 480        # الوثائق: يجب أن تكون الصور أصغر من 512×512
 REQUEST_TIMEOUT = 150
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 5          # يتحمل الازدحام: انتظار متصاعد بين المحاولات
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 class CloudflareError(Exception):
     """خطأ في واجهة Cloudflare أو في الصورة المُعادة."""
+
+
+class CloudflareQuotaError(CloudflareError):
+    """انتهت الحصة اليومية المجانية (الخطأ 3036): لا جدوى من الإعادة اليوم."""
+
+
+class CloudflareFlaggedError(CloudflareError):
+    """رفض مرشّح المحتوى الطلب أو الناتج (الخطأ 3030)؛ قد تنجح محاولة مختلفة."""
 
 
 def is_configured() -> bool:
@@ -42,6 +52,18 @@ def is_configured() -> bool:
 
 def model_name() -> str:
     return os.getenv("CF_IMAGE_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def fallback_model_name() -> str:
+    return os.getenv("CF_IMAGE_FALLBACK_MODEL", "").strip() or DEFAULT_FALLBACK_MODEL
+
+
+def json_payload(model: str, prompt: str, width: int, height: int) -> dict[str, Any]:
+    """جسم JSON للنماذج التي لا تستعمل multipart (مثل FLUX.1 schnell)."""
+    if "flux-1" in model:
+        # الوثائق: الحد الأقصى للبرومبت 2048 حرفًا، وsteps افتراضيها 4
+        return {"prompt": prompt[:2048], "steps": 4}
+    return {"prompt": prompt, "width": width, "height": height}
 
 
 def _reference_bytes(image: Image.Image) -> bytes:
@@ -132,6 +154,7 @@ def generate_image(
     width: int = 1280,
     height: int = 720,
     seed: int | None = None,
+    model: str | None = None,
 ) -> Image.Image:
     """يولّد صورة بالأبعاد المطلوبة، أو يرفع CloudflareError."""
     account = os.getenv("CF_ACCOUNT_ID", "").strip()
@@ -141,15 +164,19 @@ def generate_image(
             "المفتاحان CF_ACCOUNT_ID و CF_API_TOKEN غير موجودين في Secrets."
         )
 
-    url = f"{API_BASE}/{account}/ai/run/{model_name()}"
+    chosen_model = model or model_name()
+    url = f"{API_BASE}/{account}/ai/run/{chosen_model}"
     headers = {"Authorization": f"Bearer {token}"}
     last_error = "فشل الاتصال بـ Cloudflare."
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        form = build_form(prompt, references, width, height, seed)
+        if "flux-2" in chosen_model:
+            body = {"files": build_form(prompt, references, width, height, seed)}
+        else:
+            body = {"json": json_payload(chosen_model, prompt, width, height)}
         try:
             response = requests.post(
-                url, headers=headers, files=form, timeout=REQUEST_TIMEOUT
+                url, headers=headers, timeout=REQUEST_TIMEOUT, **body
             )
         except requests.RequestException as exc:
             last_error = f"تعذر الاتصال بـ Cloudflare: {exc}"
@@ -166,6 +193,10 @@ def generate_image(
                 f"خطأ Cloudflare HTTP {response.status_code}: "
                 f"{_error_text(response)}"
             )
+            if "3036" in last_error or "daily free allocation" in last_error:
+                raise CloudflareQuotaError(last_error)
+            if "3030" in last_error or "flagged" in last_error.lower():
+                raise CloudflareFlaggedError(last_error)
             retryable = (
                 response.status_code in RETRY_STATUS
                 or "3040" in last_error        # Out of Capacity
@@ -174,7 +205,7 @@ def generate_image(
                 raise CloudflareError(last_error)
 
         if attempt < MAX_ATTEMPTS:
-            wait = 6 * attempt
+            wait = min(10 * 2 ** (attempt - 1), 90)
             print(f"تحذير: محاولة Cloudflare {attempt} فشلت؛ "
                   f"إعادة المحاولة بعد {wait} ثانية.")
             time.sleep(wait)
