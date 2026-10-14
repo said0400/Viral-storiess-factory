@@ -92,6 +92,10 @@ class ProjectError(Exception):
     """خطأ متوقع أثناء استخراج المقال أو إنشاء النتائج."""
 
 
+class StoryRejected(ProjectError):
+    """القصة مرفوضة (مخالفات واقعية في المقال): يُختار موضوع آخر بدل النشر."""
+
+
 def validate_public_url(url: str) -> str:
     if not isinstance(url, str) or not url.strip():
         raise ProjectError("رابط المقال فارغ.")
@@ -1389,6 +1393,12 @@ def main():
         f"({rewritten['writer']['model']})، "
         f"الكلمات: {rewritten['stats']['words']}"
     )
+
+    # وضع الاختيار التلقائي: لا يُنشر مقال فيه مخالفات واقعية، بل تُرفض القصة
+    if os.getenv("REJECT_ON_ISSUES", "").strip().lower() in {"1", "true", "yes"}:
+        reject_reason = writer.rejection_reason(rewritten)
+        if reject_reason:
+            raise StoryRejected(reject_reason)
 
     print("3/6: تنزيل الصور والتحقق منها...")
     selected = download_article_images(article["image_urls"])
