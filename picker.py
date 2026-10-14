@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import urljoin, urldefrag, urlparse
@@ -234,7 +235,7 @@ def _validate(raw: dict[str, Any], count: int) -> list[dict[str, Any]]:
     return ranking[:MAX_CANDIDATES_TRIED]
 
 
-def rank_items(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
+def _rank_items_once(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
     listing = "\n".join(
         f"[{i}] ({it['source']}) {it['title']} — {it['summary']}"
         for i, it in enumerate(items)
@@ -262,6 +263,45 @@ def rank_items(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
             print(f"::warning title=فشل {provider} في الاختيار::{exc}")
 
     raise pipeline.ProjectError(" | ".join(errors) or "لا يوجد مزود للذكاء الاصطناعي.")
+
+
+def heuristic_ranking(items: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """ترتيب بسيط يوزّع الاختيار على المصادر بالتناوب، حين يتعطل الذكاء الاصطناعي."""
+    queues: dict[str, list[int]] = {}
+    for idx, item in enumerate(items):
+        queues.setdefault(item["source"], []).append(idx)
+
+    order: list[int] = []
+    pools = list(queues.values())
+    while any(pools) and len(order) < MAX_CANDIDATES_TRIED:
+        for pool in pools:
+            if pool and len(order) < MAX_CANDIDATES_TRIED:
+                order.append(pool.pop(0))
+    return [
+        {"id": i, "category": "", "score": 0,
+         "why": "ترتيب احتياطي (تعذر الذكاء الاصطناعي)", "hook": ""}
+        for i in order
+    ]
+
+
+def rank_items(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
+    """
+    يعيد المحاولة عدة جولات مع انتظار بينها إن تعثر المزودون (ازدحام أو حصة)،
+    ثم يلجأ إلى ترتيب بسيط بدل أن يتوقف الاختيار.
+    """
+    rounds = max(1, int(os.getenv("RANK_ROUNDS", "3") or 3))
+    wait = max(0, int(os.getenv("RANK_WAIT_SECONDS", "45") or 45))
+    for number in range(1, rounds + 1):
+        try:
+            return _rank_items_once(items)
+        except pipeline.ProjectError as exc:
+            print(f"تحذير: تعثر تحليل الذكاء الاصطناعي (الجولة {number}/{rounds}): {exc}")
+            if number < rounds:
+                print(f"انتظار {wait} ثانية ثم إعادة المحاولة...")
+                time.sleep(wait)
+    print("::warning title=ترتيب احتياطي::تعذر الذكاء الاصطناعي؛ "
+          "يُستعمل ترتيب بسيط بدل التحليل.")
+    return heuristic_ranking(items), "heuristic"
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +352,19 @@ def _write_outputs(item, entry, how: str) -> None:
                 f"- **الخطاف المقترح:** {entry['hook']}\n"
                 f"- **المحلل:** {how}\n"
             )
+
+
+def pick_story() -> tuple[dict[str, str], dict[str, Any]]:
+    """
+    يختار قصة جديدة ويعيد (المقال، تحليله). تُستبعد تلقائيًا المقالات المعالَجة
+    والمرفوضة سابقًا لأن كلًا منها يترك result.json في مجلده.
+    """
+    items = collect_items()
+    if not items:
+        raise pipeline.ProjectError("لم يُجلب أي مقال جديد من المصادر.")
+    ranking, _ = rank_items(items)
+    item, entry, _ = choose(items, ranking)
+    return item, entry
 
 
 def main() -> int:
