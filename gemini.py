@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import time
 from io import BytesIO
 from typing import Any
@@ -20,7 +21,7 @@ DEFAULT_MODELS = ("gemini-3.8-flash", "gemini-3.5-flash")
 
 MAX_IMAGES = 4
 REQUEST_TIMEOUT = 120
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 6           # صبر أطول: يتحمل ازدحام Gemini (503) وحدود الدقيقة (429)
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 
 BLOCKED_REASONS = {
@@ -149,6 +150,8 @@ def _generate(
                     f"{response.text[:800]}"
                 )
 
+                if response.status_code == 429 and "PerDay" in response.text:
+                    break  # حصة اليوم انتهت: لا فائدة من الانتظار، جرّب النموذج التالي
                 # نموذج غير موجود أو طلب مرفوض: جرّب النموذج التالي.
                 if response.status_code in (400, 404):
                     break
@@ -156,7 +159,11 @@ def _generate(
                     raise GeminiError(last_error)
 
             if attempt < MAX_ATTEMPTS:
-                wait = min(6 * attempt, 20)
+                wait = min(10 * 2 ** (attempt - 1), 90)
+                # إن ذكر Gemini مدة الانتظار المطلوبة (retryDelay) نحترمها
+                hinted = re.search(r'retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s', last_error)
+                if hinted:
+                    wait = max(wait, min(int(float(hinted.group(1))) + 2, 120))
                 print(
                     f"تحذير: محاولة Gemini {attempt} فشلت "
                     f"({last_error[:160]}) "
