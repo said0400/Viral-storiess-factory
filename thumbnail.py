@@ -12,6 +12,7 @@ THUMBNAIL_MODE=ai_full يعيد التوليد الكامل من الصور ال
 from __future__ import annotations
 
 import os
+import random
 import re
 import unicodedata
 from pathlib import Path
@@ -396,6 +397,99 @@ def _try_ai_full(images, plan, headline, highlight, destination,
             "text": text_info}
 
 
+# ---------------------------------------------------------------------------
+# التوليد الكامل بالذكاء الاصطناعي دائمًا: تدرّج في المحاولات قبل أي احتياط
+# ---------------------------------------------------------------------------
+
+SCENE_PROMPT = (
+    "Professional YouTube thumbnail, 16:9 widescreen, dramatic cinematic "
+    "composition. {brief}{setting}Strong contrast, vivid saturated colors, "
+    "soft blurred background, shallow depth of field, a clear focal point "
+    "following the rule of thirds, subtle vignette. Keep the lower fifth of "
+    "the frame calm and uncluttered so a headline can be added later. "
+    "Photorealistic. No text, no letters, no captions, no logos, no "
+    "watermarks, no borders, no frames."
+)
+
+
+def build_scene_prompt(plan, headline: str = "") -> str:
+    """وصف مشهد بلا صور مرجعية: من وصف التحليل البصري، أو من عنوان القصة."""
+    brief = (plan.get("thumbnail_brief") or "").strip()
+    setting = (plan.get("thumbnail_background") or "").strip()
+    if not brief and not setting and headline:
+        brief = f"Story theme (Arabic headline, for context only): {headline}."
+    brief = (brief + " ") if brief else ""
+    setting = (setting + " ") if setting else ""
+    return SCENE_PROMPT.format(brief=brief, setting=setting)
+
+
+def _try_ai_full_ladder(images, plan, headline, highlight, destination,
+                        prompt_file, cf_skip) -> dict[str, Any]:
+    """
+    يولّد الصورة كاملة بالذكاء الاصطناعي ويتدرّج عند الرفض أو التعثر:
+      1) الصور المرجعية + البرومبت الأساسي
+      2) إعادة بنتيجة عشوائية مختلفة (مرشّح المحتوى يخطئ أحيانًا)
+      3) وصف المشهد بلا صور مرجعية
+      4) نموذج Cloudflare احتياطي (FLUX.1 schnell)
+      5) النموذج الاحتياطي بوصف آمن بلا أشخاص
+    انتهاء الحصة اليومية يوقف التدرّج فورًا (كل النماذج تتشارك الحصة)،
+    فيرفع CloudflareQuotaError ليتولى create_thumbnail الاحتياط المحلي.
+    """
+    if cf_skip:
+        raise ThumbnailError(cf_skip)
+
+    refs = reference_images(images, plan)
+    main_prompt = build_prompt(plan, len(refs))
+    scene_prompt = build_scene_prompt(plan, headline)
+    safe_prompt = build_background_prompt(plan, "deep blue")
+    fallback_model = cloudflare_ai.fallback_model_name()
+
+    steps = [
+        ("المحاولة الأساسية بالصور المرجعية", None, refs, main_prompt),
+        ("إعادة بنتيجة عشوائية مختلفة", None, refs, main_prompt),
+        ("وصف المشهد بلا صور مرجعية", None, [], scene_prompt),
+        ("نموذج احتياطي", fallback_model, [], scene_prompt),
+        ("نموذج احتياطي بوصف آمن", fallback_model, [], safe_prompt),
+    ]
+
+    errors: list[str] = []
+    for number, (label, model, step_refs, prompt) in enumerate(steps, start=1):
+        seed = random.randint(1, 2**31 - 1)
+        try:
+            generated = cloudflare_ai.generate_image(
+                prompt, step_refs, THUMB_SIZE[0], THUMB_SIZE[1], seed,
+                model=model)
+            if _is_blank(generated):
+                raise CloudflareError("الصورة المولّدة فارغة تقريبًا.")
+        except cloudflare_ai.CloudflareQuotaError as exc:
+            print("::warning title=حصة Cloudflare::انتهت الحصة اليومية؛ "
+                  "يُستعمل الاحتياط المحلي.")
+            raise
+        except CloudflareError as exc:
+            errors.append(f"{label}: {exc}")
+            print(f"::warning title=تعذر التوليد ({label})::{exc}")
+            continue
+
+        if prompt_file:
+            prompt_file.parent.mkdir(parents=True, exist_ok=True)
+            prompt_file.write_text(
+                f"mode: ai_full (محاولة {number}: {label})\n"
+                f"model: {model or cloudflare_ai.model_name()}\n"
+                f"references: {len(step_refs)}\n\n{prompt}\n",
+                encoding="utf-8")
+
+        text_info = add_headline(generated, headline, highlight,
+                                 preferred_zone=calmer_zone(generated))
+        _save(generated, destination)
+        return {"file": destination.name, "source": "cloudflare_full",
+                "model": model or cloudflare_ai.model_name(),
+                "attempt": number, "attempt_label": label,
+                "reason": " | ".join(errors), "text": text_info}
+
+    raise ThumbnailError(
+        "فشلت كل محاولات التوليد بالذكاء الاصطناعي: " + " | ".join(errors))
+
+
 def create_thumbnail(
     images: list[Image.Image],
     plan: dict[str, Any],
@@ -412,7 +506,7 @@ def create_thumbnail(
     """
     mode = os.getenv("THUMBNAIL_MODE", "").strip().lower() or "hybrid"
     cf_skip = _cloudflare_skip_reason(sensitive)
-    attempt = _try_ai_full if mode == "ai_full" else _try_hybrid
+    attempt = _try_ai_full_ladder if mode == "ai_full" else _try_hybrid
     reason = ""
 
     try:
