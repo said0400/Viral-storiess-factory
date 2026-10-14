@@ -40,7 +40,7 @@ jobs:
   generate:
     name: Generate Arabic Content and Image
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -108,6 +108,7 @@ jobs:
         env:
           ARTICLE_URL: ${{ inputs.article_url || steps.pick.outputs.article_url }}
           CONTENT_CATEGORY: ${{ steps.pick.outputs.category }}
+          AUTO_PICK: ${{ inputs.article_url == '' }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
@@ -129,7 +130,7 @@ jobs:
           REMBG_MODEL: ${{ vars.REMBG_MODEL }}
           MAX_ARTICLE_CHARS: "30000"
           PYTHONUNBUFFERED: "1"
-        run: python main.py
+        run: python run_factory.py
 
       - name: Verify output
         shell: bash
