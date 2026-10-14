@@ -1,6 +1,14 @@
 name: Viral Content Factory
 
 on:
+  schedule:
+    # 10:00 و17:00 بتوقيت المغرب (Africa/Casablanca). التوقيت UTC+1 طوال السنة
+    # وUTC+0 في رمضان، وcron يعمل بتوقيت UTC، فنضع كل موعد مرتين (للتوقيتين)
+    # وتُبقي خطوة schedule-gate الموعد الصحيح فقط وتتخطى الآخر.
+    - cron: "0 9 * * *"     # 10:00 المغرب (UTC+1)
+    - cron: "0 10 * * *"    # 10:00 المغرب في رمضان (UTC+0)
+    - cron: "0 16 * * *"    # 17:00 المغرب (UTC+1)
+    - cron: "0 17 * * *"    # 17:00 المغرب في رمضان (UTC+0)
   workflow_dispatch:
     inputs:
       article_url:
@@ -37,8 +45,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  schedule-gate:
+    name: Check Morocco time slot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.slot.outputs.run }}
+    steps:
+      - name: Decide whether to run now
+        id: slot
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # التشغيل اليدوي يمر دائمًا؛ المجدول يمر فقط في الساعة 10 أو 17 بتوقيت المغرب
+          if [[ "$EVENT_NAME" != "schedule" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR="$(TZ=Africa/Casablanca date +%H)"
+          echo "Morocco hour now: $HOUR"
+          if [[ "$HOUR" == "10" || "$HOUR" == "17" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not a publishing slot (10:00 / 17:00 Morocco time); skipping."
+          fi
+
   generate:
     name: Generate Arabic Content and Image
+    needs: schedule-gate
+    if: ${{ needs.schedule-gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -92,7 +129,7 @@ jobs:
 
       - name: Pick story automatically
         id: pick
-        if: ${{ inputs.article_url == '' }}
+        if: ${{ github.event_name == 'schedule' || inputs.article_url == '' }}
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
@@ -100,6 +137,8 @@ jobs:
           GEMINI_WRITER_API_KEY: ${{ secrets.GEMINI_WRITER_API_KEY }}
           GEMINI_WRITER_MODEL: ${{ vars.GEMINI_WRITER_MODEL }}
           WRITER_PROVIDER: ${{ vars.WRITER_PROVIDER }}
+          RANK_ROUNDS: ${{ vars.RANK_ROUNDS }}
+          RANK_WAIT_SECONDS: ${{ vars.RANK_WAIT_SECONDS }}
           PYTHONUNBUFFERED: "1"
         run: python picker.py
 
@@ -108,7 +147,14 @@ jobs:
         env:
           ARTICLE_URL: ${{ inputs.article_url || steps.pick.outputs.article_url }}
           CONTENT_CATEGORY: ${{ steps.pick.outputs.category }}
-          AUTO_PICK: ${{ inputs.article_url == '' }}
+          AUTO_PICK: ${{ github.event_name == 'schedule' || inputs.article_url == '' }}
+          MAX_STORY_ATTEMPTS: ${{ vars.MAX_STORY_ATTEMPTS }}
+          REJECT_ON: ${{ vars.REJECT_ON }}
+          MAX_UNSUPPORTED: ${{ vars.MAX_UNSUPPORTED }}
+          RANK_ROUNDS: ${{ vars.RANK_ROUNDS }}
+          RANK_WAIT_SECONDS: ${{ vars.RANK_WAIT_SECONDS }}
+          CF_IMAGE_FALLBACK_MODEL: ${{ vars.CF_IMAGE_FALLBACK_MODEL }}
+          FB_IMAGE_RATIO: ${{ vars.FB_IMAGE_RATIO }}
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
@@ -182,7 +228,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
 
       - name: Publish to Blogger
-        if: ${{ inputs.publish_to_blogger }}
+        if: ${{ github.event_name == 'schedule' || inputs.publish_to_blogger }}
         continue-on-error: true
         shell: bash
         env:
@@ -202,7 +248,7 @@ jobs:
           python blogger_publish.py
 
       - name: Commit Blogger result
-        if: ${{ inputs.publish_to_blogger }}
+        if: ${{ github.event_name == 'schedule' || inputs.publish_to_blogger }}
         shell: bash
         run: |
           set -euo pipefail
@@ -227,7 +273,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
 
       - name: Send package to WhatsApp (GREEN-API)
-        if: ${{ inputs.send_whatsapp }}
+        if: ${{ github.event_name == 'schedule' || inputs.send_whatsapp }}
         continue-on-error: true
         shell: bash
         env:
