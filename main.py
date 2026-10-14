@@ -362,7 +362,7 @@ def average_hash(image: Image.Image) -> int:
     small = image.convert("L").resize(
         (8, 8), Image.Resampling.LANCZOS
     )
-    pixels = list(small.getdata())
+    pixels = list(small.tobytes())
     mean = sum(pixels) / len(pixels)
 
     result = 0
