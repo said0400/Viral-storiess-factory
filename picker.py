@@ -18,7 +18,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from typing import Any
-from urllib.parse import urljoin, urldefrag, urlparse
+from urllib.parse import urljoin, urldefrag
 
 from bs4 import BeautifulSoup
 
@@ -29,14 +29,8 @@ from gemini import GeminiError
 from grok import GrokError
 
 
-# التصنيفات الخمسة (تصبح تسميات Blogger عند ترك blogger_label فارغًا)
-CATEGORIES = [
-    "غرائب وعجائب",
-    "معجزات ونجاة",
-    "قصص إنسانية وواقعية",
-    "تريند",
-    "حول العالم",
-]
+# التصنيفات الخمسة (مصدر موحد في categories.py)
+from categories import CATEGORIES  # noqa: E402
 
 # لكل مصدر: مسارات الخلاصة المعروفة أولًا، ثم الصفحة الرئيسية للاكتشاف التلقائي.
 FEEDS: dict[str, list[str]] = {
@@ -289,8 +283,14 @@ def rank_items(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
     يعيد المحاولة عدة جولات مع انتظار بينها إن تعثر المزودون (ازدحام أو حصة)،
     ثم يلجأ إلى ترتيب بسيط بدل أن يتوقف الاختيار.
     """
-    rounds = max(1, int(os.getenv("RANK_ROUNDS", "3") or 3))
-    wait = max(0, int(os.getenv("RANK_WAIT_SECONDS", "45") or 45))
+    def number(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, "").strip() or default)
+        except ValueError:
+            return default
+
+    rounds = max(1, number("RANK_ROUNDS", 3))
+    wait = max(0, number("RANK_WAIT_SECONDS", 45))
     for number in range(1, rounds + 1):
         try:
             return _rank_items_once(items)
