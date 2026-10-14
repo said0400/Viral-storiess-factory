@@ -772,6 +772,39 @@ def write_article(
 # تنسيق الملفات الناتجة
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# رفض القصة: مخالفات واقعية تستوجب اختيار قصة أخرى بدل النشر
+# ---------------------------------------------------------------------------
+
+# المخالفات التي ترفض القصة (تُعدَّل من متغير REJECT_ON، مفصولة بفواصل)
+DEFAULT_REJECT_ON = ("personal_claims", "source_mentions", "numbers_not_in_source")
+# أكثر من هذا العدد من الجمل غير المدعومة بالمصدر يرفض القصة (MAX_UNSUPPORTED)
+MAX_UNSUPPORTED_SENTENCES = 1
+
+
+def rejection_reason(data: dict[str, Any]) -> str:
+    """سبب رفض القصة، أو نص فارغ إن كانت صالحة للنشر."""
+    configured = os.getenv("REJECT_ON", "").strip()
+    keys = tuple(k.strip() for k in configured.split(",") if k.strip()) \
+        or DEFAULT_REJECT_ON
+
+    reasons: list[str] = []
+    issues = data.get("audit") or {}
+    for key in keys:
+        if issues.get(key):
+            label = ISSUE_LABELS.get(key, key)
+            reasons.append(f"{label}: {', '.join(issues[key])}")
+
+    unsupported = (data.get("review") or {}).get("unsupported") or []
+    try:
+        limit = int(os.getenv("MAX_UNSUPPORTED", MAX_UNSUPPORTED_SENTENCES))
+    except ValueError:
+        limit = MAX_UNSUPPORTED_SENTENCES
+    if len(unsupported) > limit:
+        reasons.append(f"{len(unsupported)} جمل لا يدعمها المصدر")
+    return "؛ ".join(reasons)
+
+
 def build_post_text(data: dict[str, Any]) -> str:
     parts = [data["title"], data["facebook_post"]]
     if data.get("hashtags"):
