@@ -4,7 +4,8 @@
 الوضع الافتراضي (hybrid): Cloudflare يولّد الخلفية والأجواء فقط (بلا أشخاص)،
 وتُقص الوجوه الحقيقية من صور المقال وتوضع فوقها، ثم يُكتب العنوان. فتبقى
 الملامح حقيقية. إن تعذّر Cloudflare تُستخدم خلفية مولّدة محليًا.
-THUMBNAIL_MODE=ai_full يعيد التوليد الكامل من الصور المرجعية (قد يغيّر الملامح).
+THUMBNAIL_MODE=ai_full يعيد التوليد الكامل من الصور المرجعية (قد يغيّر الملامح)،
+ويتدرّج عبر 5 محاولات بالذكاء الاصطناعي (_try_ai_full_ladder) قبل أي احتياط محلي.
 
 إن تعذّر القص كله تُستخدم الصورة الأولى (الدمج) كصورة للمقال مع العنوان،
 وتبقى الصورة الأولى بلا نص.
@@ -461,7 +462,7 @@ def _try_ai_full_ladder(images, plan, headline, highlight, destination,
                 model=model)
             if _is_blank(generated):
                 raise CloudflareError("الصورة المولّدة فارغة تقريبًا.")
-        except cloudflare_ai.CloudflareQuotaError as exc:
+        except cloudflare_ai.CloudflareQuotaError:
             print("::warning title=حصة Cloudflare::انتهت الحصة اليومية؛ "
                   "يُستعمل الاحتياط المحلي.")
             raise
