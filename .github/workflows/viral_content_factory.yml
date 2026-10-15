@@ -2,13 +2,8 @@ name: Viral Content Factory
 
 on:
   schedule:
-    # 10:00 و17:00 بتوقيت المغرب (Africa/Casablanca). التوقيت UTC+1 طوال السنة
-    # وUTC+0 في رمضان، وcron يعمل بتوقيت UTC، فنضع كل موعد مرتين (للتوقيتين)
-    # وتُبقي خطوة schedule-gate الموعد الصحيح فقط وتتخطى الآخر.
-    - cron: "0 9 * * *"     # 10:00 المغرب (UTC+1)
-    - cron: "0 10 * * *"    # 10:00 المغرب في رمضان (UTC+0)
-    - cron: "0 16 * * *"    # 17:00 المغرب (UTC+1)
-    - cron: "0 17 * * *"    # 17:00 المغرب في رمضان (UTC+0)
+    # موعد النشر اليومي: 08:25 بتوقيت المغرب (07:25 UTC عندما يكون المغرب UTC+1)
+    - cron: "4 9 * * *"
   workflow_dispatch:
     inputs:
       article_url:
@@ -45,37 +40,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  schedule-gate:
-    name: Check Morocco time slot
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      run: ${{ steps.slot.outputs.run }}
-    steps:
-      - name: Decide whether to run now
-        id: slot
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          # التشغيل اليدوي يمر دائمًا؛ المجدول يمر فقط في الساعة 10 أو 17 بتوقيت المغرب
-          if [[ "$EVENT_NAME" != "schedule" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          HOUR="$(TZ=Africa/Casablanca date +%H)"
-          echo "Morocco hour now: $HOUR"
-          if [[ "$HOUR" == "10" || "$HOUR" == "17" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "Not a publishing slot (10:00 / 17:00 Morocco time); skipping."
-          fi
-
   generate:
     name: Generate Arabic Content and Image
-    needs: schedule-gate
-    if: ${{ needs.schedule-gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -126,6 +92,23 @@ jobs:
             echo "::error::Missing GROQ_API_KEY in GitHub Secrets."
             exit 1
           fi
+
+      - name: Preflight check (files, imports, secrets)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_WRITER_API_KEY: ${{ secrets.GEMINI_WRITER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
+          BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
+          BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+          GREENAPI_ID_INSTANCE: ${{ secrets.GREENAPI_ID_INSTANCE }}
+          GREENAPI_API_TOKEN: ${{ secrets.GREENAPI_API_TOKEN }}
+          GREENAPI_CHAT_ID: ${{ secrets.GREENAPI_CHAT_ID }}
+          PYTHONUNBUFFERED: "1"
+        run: python preflight.py
 
       - name: Pick story automatically
         id: pick
