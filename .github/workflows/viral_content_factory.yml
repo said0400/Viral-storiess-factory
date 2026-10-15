@@ -3,7 +3,7 @@ name: Viral Content Factory
 on:
   schedule:
     # موعد النشر اليومي: 08:25 بتوقيت المغرب (07:25 UTC عندما يكون المغرب UTC+1)
-    - cron: "4 9 * * *"
+    - cron: "6 10 * * *"
   workflow_dispatch:
     inputs:
       article_url:
