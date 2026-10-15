@@ -2,8 +2,13 @@ name: Viral Content Factory
 
 on:
   schedule:
-    # موعد النشر اليومي: 08:25 بتوقيت المغرب (07:25 UTC عندما يكون المغرب UTC+1)
-    - cron: "7 8 * * *"
+    # موعدا النشر: 10:00 و17:00 بتوقيت المغرب (Africa/Casablanca).
+    # GitHub يؤخر المجدولات أحيانًا (خاصة عند بداية الساعة) أو يُسقطها، وتوقيت المغرب
+    # UTC+1 وفي رمضان UTC+0. لذلك نضع عدة محاولات (دقيقة 11 لتجنب الازدحام)، وتقرر
+    # وظيفة schedule-gate: هل نحن داخل نافذة موعد لم يُنشر فيه مقال اليوم بعد؟
+    # أول محاولة داخل النافذة تعمل، وما بعدها يُتخطى، فلا ضياع للموعد ولا تكرار.
+    - cron: "11 9-12 * * *"    # نافذة الصباح (10:00–13:59 بتوقيت المغرب)
+    - cron: "11 16-19 * * *"   # نافذة المساء (17:00–20:59 بتوقيت المغرب)
   workflow_dispatch:
     inputs:
       article_url:
@@ -31,6 +36,11 @@ on:
         required: false
         default: true
         type: boolean
+      slot:
+        description: "للاستدعاء الخارجي فقط (cron-job.org): morning أو evening. اتركه فارغًا في التشغيل اليدوي"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -40,8 +50,77 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  schedule-gate:
+    name: Check Morocco time slot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.slot.outputs.run }}
+      slot: ${{ steps.slot.outputs.slot }}
+      day: ${{ steps.slot.outputs.day }}
+      unattended: ${{ steps.slot.outputs.unattended }}
+    steps:
+      - name: Checkout repository (to read slot markers)
+        if: ${{ github.event_name == 'schedule' || inputs.slot != '' }}
+        uses: actions/checkout@v4
+
+      - name: Decide whether to run now
+        id: slot
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SLOT: ${{ inputs.slot }}
+        run: |
+          set -euo pipefail
+          NOW="${GATE_NOW:-now}"      # GATE_NOW للاختبار فقط
+          DAY="$(TZ=Africa/Casablanca date -d "$NOW" +%F)"
+          SLOT=""
+
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            # الجدولة الداخلية: نافذة لكل موعد بتوقيت المغرب
+            HOUR="$(TZ=Africa/Casablanca date -d "$NOW" +%H)"
+            HOUR=$((10#$HOUR))
+            if (( HOUR >= 10 && HOUR <= 13 )); then
+              SLOT=morning
+            elif (( HOUR >= 17 && HOUR <= 20 )); then
+              SLOT=evening
+            fi
+            echo "Morocco time: $DAY hour=$HOUR slot=${SLOT:-none}"
+            if [[ -z "$SLOT" ]]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "Outside the publishing windows (10-13h / 17-20h Morocco time); skipping."
+              exit 0
+            fi
+          elif [[ -n "$INPUT_SLOT" ]]; then
+            # استدعاء خارجي (cron-job.org) يحدد الموعد صراحةً
+            case "$INPUT_SLOT" in
+              morning|evening) SLOT="$INPUT_SLOT" ;;
+              *) echo "::error::slot must be 'morning' or 'evening' (got '$INPUT_SLOT')"; exit 1 ;;
+            esac
+            echo "External trigger for the $SLOT slot of $DAY"
+          else
+            # تشغيل يدوي عادي: يمر دائمًا ولا يستهلك موعدًا
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "unattended=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -f "output/_slots/${DAY}-${SLOT}.txt" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "The $SLOT article of $DAY was already published; skipping."
+            exit 0
+          fi
+          {
+            echo "run=true"
+            echo "slot=$SLOT"
+            echo "day=$DAY"
+            echo "unattended=true"
+          } >> "$GITHUB_OUTPUT"
+
   generate:
     name: Generate Arabic Content and Image
+    needs: schedule-gate
+    if: ${{ needs.schedule-gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -112,7 +191,7 @@ jobs:
 
       - name: Pick story automatically
         id: pick
-        if: ${{ github.event_name == 'schedule' || inputs.article_url == '' }}
+        if: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.article_url == '' }}
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
@@ -130,7 +209,7 @@ jobs:
         env:
           ARTICLE_URL: ${{ inputs.article_url || steps.pick.outputs.article_url }}
           CONTENT_CATEGORY: ${{ steps.pick.outputs.category }}
-          AUTO_PICK: ${{ github.event_name == 'schedule' || inputs.article_url == '' }}
+          AUTO_PICK: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.article_url == '' }}
           MAX_STORY_ATTEMPTS: ${{ vars.MAX_STORY_ATTEMPTS }}
           REJECT_ON: ${{ vars.REJECT_ON }}
           MAX_UNSUPPORTED: ${{ vars.MAX_UNSUPPORTED }}
@@ -186,6 +265,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Mark publishing slot as done
+        if: ${{ needs.schedule-gate.outputs.slot != '' }}
+        shell: bash
+        env:
+          SLOT: ${{ needs.schedule-gate.outputs.slot }}
+          DAY: ${{ needs.schedule-gate.outputs.day }}
+        run: |
+          mkdir -p output/_slots
+          echo "done $(date -u +%FT%TZ)" > "output/_slots/${DAY}-${SLOT}.txt"
+
       - name: Commit generated files
         shell: bash
         run: |
@@ -211,7 +300,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
 
       - name: Publish to Blogger
-        if: ${{ github.event_name == 'schedule' || inputs.publish_to_blogger }}
+        if: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.publish_to_blogger }}
         continue-on-error: true
         shell: bash
         env:
@@ -231,7 +320,7 @@ jobs:
           python blogger_publish.py
 
       - name: Commit Blogger result
-        if: ${{ github.event_name == 'schedule' || inputs.publish_to_blogger }}
+        if: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.publish_to_blogger }}
         shell: bash
         run: |
           set -euo pipefail
@@ -256,7 +345,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
 
       - name: Send package to WhatsApp (GREEN-API)
-        if: ${{ github.event_name == 'schedule' || inputs.send_whatsapp }}
+        if: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.send_whatsapp }}
         continue-on-error: true
         shell: bash
         env:
