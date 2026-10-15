@@ -2,20 +2,16 @@ name: Viral Content Factory
 
 on:
   schedule:
-    # ──────────────────────────────────────────────────────────
-    #  موعدان يوميّان بتوقيت المغرب: 10:00 صباحًا و 17:00 مساءً
-    #
-    #  المغرب = UTC+1 معظم السنة  →  10:00 = 09:00 UTC
-    #  المغرب = UTC+0 في رمضان    →  10:00 = 10:00 UTC
-    #
-    #  نضع محاولتين لكل موعد (دقيقة 05 لتجنّب ازدحام بداية الساعة).
-    #  schedule-gate يقرّر أيّ محاولة هي الصحيحة ويمنع التكرار.
-    # ──────────────────────────────────────────────────────────
-    - cron: "8 8 * * *"      # 🌅 10:05 المغرب (التوقيت العادي UTC+1)
-    - cron: "8 9 * * *"     # 🌅 10:05 المغرب (رمضان UTC+0)
-    - cron: "5 16 * * *"     # 🌇 17:05 المغرب (التوقيت العادي UTC+1)
-    - cron: "5 17 * * *"     # 🌇 17:05 المغرب (رمضان UTC+0)
-
+    # موعد النشر اليومي الوحيد: 08:25 بتوقيت المغرب (Africa/Casablanca).
+    # GitHub يؤخر المجدولات أحيانًا أو يُسقطها، وتوقيت المغرب UTC+1
+    # وفي رمضان UTC+0. لذلك نضع عدة محاولات (دقيقة 25)، وتقرر وظيفة
+    # schedule-gate: هل بلغنا 08:25 بتوقيت المغرب ولم يُنشر مقال اليوم بعد؟
+    # أول محاولة داخل النافذة (08:25–11:59 بتوقيت المغرب) تعمل، وما بعدها
+    # يُتخطى، فلا ضياع للموعد ولا تكرار.
+    - cron: "21 7 * * *"     # 08:25 بتوقيت المغرب في الوضع العادي (UTC+1)
+    - cron: "21 8 * * *"     # 08:25 في رمضان (UTC+0) / 09:25 في الوضع العادي
+    - cron: "21 9 * * *"     # محاولة احتياطية
+    - cron: "21 10 * * *"    # محاولة احتياطية أخيرة
   workflow_dispatch:
     inputs:
       article_url:
@@ -44,7 +40,7 @@ on:
         default: true
         type: boolean
       slot:
-        description: "للاستدعاء الخارجي فقط (cron-job.org): morning أو evening"
+        description: "للاستدعاء الخارجي فقط (cron-job.org): daily. اتركه فارغًا في التشغيل اليدوي"
         required: false
         default: ""
         type: string
@@ -79,62 +75,50 @@ jobs:
           INPUT_SLOT: ${{ inputs.slot }}
         run: |
           set -euo pipefail
-
-          DAY="$(TZ=Africa/Casablanca date +%F)"
-          HOUR="$(TZ=Africa/Casablanca date +%H)"
-          HOUR=$((10#$HOUR))
+          NOW="${GATE_NOW:-now}"      # GATE_NOW للاختبار فقط
+          DAY="$(TZ=Africa/Casablanca date -d "$NOW" +%F)"
           SLOT=""
 
           if [[ "$EVENT_NAME" == "schedule" ]]; then
-            # ── الجدولة التلقائية ──
-            # نقبل الساعة 9-11 للصباح و 16-18 للمساء
-            # (تغطي UTC+0 و UTC+1 مع هامش أمان)
-            if (( HOUR >= 9 && HOUR <= 11 )); then
-              SLOT=morning
-            elif (( HOUR >= 16 && HOUR <= 18 )); then
-              SLOT=evening
+            # الجدولة الداخلية: نافذة الموعد اليومي بتوقيت المغرب
+            # من 08:25 (505 دقيقة) إلى 11:59 (719 دقيقة)
+            HOUR="$(TZ=Africa/Casablanca date -d "$NOW" +%H)"
+            MINUTE="$(TZ=Africa/Casablanca date -d "$NOW" +%M)"
+            MINUTES_OF_DAY=$(( 10#$HOUR * 60 + 10#$MINUTE ))
+            if (( MINUTES_OF_DAY >= 505 && MINUTES_OF_DAY <= 719 )); then
+              SLOT=daily
             fi
-
-            echo "🇲🇦 Morocco time: $DAY hour=$HOUR slot=${SLOT:-none}"
-
+            echo "Morocco time: $DAY ${HOUR}:${MINUTE} slot=${SLOT:-none}"
             if [[ -z "$SLOT" ]]; then
               echo "run=false" >> "$GITHUB_OUTPUT"
-              echo "⏭️  Outside publishing windows (9-11h / 16-18h Morocco); skipping."
+              echo "Outside the publishing window (08:25-11:59 Morocco time); skipping."
               exit 0
             fi
-
           elif [[ -n "$INPUT_SLOT" ]]; then
-            # ── استدعاء خارجي (cron-job.org) ──
+            # استدعاء خارجي (cron-job.org) يحدد الموعد صراحةً
             case "$INPUT_SLOT" in
-              morning|evening) SLOT="$INPUT_SLOT" ;;
-              *) echo "::error::slot must be 'morning' or 'evening' (got '$INPUT_SLOT')"; exit 1 ;;
+              daily|morning) SLOT="daily" ;;
+              *) echo "::error::slot must be 'daily' (got '$INPUT_SLOT')"; exit 1 ;;
             esac
-            echo "🔗 External trigger for the $SLOT slot of $DAY"
-
+            echo "External trigger for the $SLOT slot of $DAY"
           else
-            # ── تشغيل يدوي: يمر دائمًا ──
+            # تشغيل يدوي عادي: يمر دائمًا ولا يستهلك موعدًا
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "unattended=false" >> "$GITHUB_OUTPUT"
-            echo "slot=" >> "$GITHUB_OUTPUT"
-            echo "day=$DAY" >> "$GITHUB_OUTPUT"
-            echo "🖐️  Manual run — no slot consumed."
             exit 0
           fi
 
-          # ── منع التكرار: هل نُشر هذا الموعد اليوم بالفعل؟ ──
           if [[ -f "output/_slots/${DAY}-${SLOT}.txt" ]]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "✅ The $SLOT article of $DAY was already published; skipping duplicate."
+            echo "The $SLOT article of $DAY was already published; skipping."
             exit 0
           fi
-
           {
             echo "run=true"
             echo "slot=$SLOT"
             echo "day=$DAY"
             echo "unattended=true"
           } >> "$GITHUB_OUTPUT"
-          echo "🚀 Slot '$SLOT' for $DAY is available — proceeding."
 
   generate:
     name: Generate Arabic Content and Image
@@ -144,10 +128,6 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      # ═══════════════════════════════════════════════════════
-      #  باقي الخطوات تبقى كما هي تمامًا (لم تتغير)
-      # ═══════════════════════════════════════════════════════
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -269,10 +249,12 @@ jobs:
           OUT_DIR: ${{ steps.generate.outputs.out_dir }}
         run: |
           set -euo pipefail
+
           if [[ -z "${OUT_DIR:-}" || ! -d "$OUT_DIR" ]]; then
             echo "::error::Output directory for this article was not created."
             exit 1
           fi
+
           if [[ -z "$(find "$OUT_DIR" -type f -print -quit)" ]]; then
             echo "::error::No output files were generated."
             exit 1
@@ -300,15 +282,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           BRANCH="${GITHUB_REF_NAME}"
+
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A -- output/
+
           if git diff --cached --quiet; then
             echo "No output changes to commit."
             exit 0
           fi
+
           git commit -m "Generate article content"
+
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
           git push origin "HEAD:refs/heads/$BRANCH"
@@ -329,6 +318,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
+          # الصور دُفعت في الخطوة السابقة؛ نستخدم commit الحالي في روابط CDN
           export BLOGGER_COMMIT_SHA="$(git rev-parse HEAD)"
           python blogger_publish.py
 
@@ -337,15 +327,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           BRANCH="${GITHUB_REF_NAME}"
+
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A -- output/
+
           if git diff --cached --quiet; then
             echo "No Blogger result changes to commit."
             exit 0
           fi
+
           git commit -m "Save Blogger publish result"
+
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
           git push origin "HEAD:refs/heads/$BRANCH"
