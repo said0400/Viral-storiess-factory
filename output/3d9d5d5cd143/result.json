@@ -149,5 +149,23 @@
   },
   "image_note": "نجح التحليل عبر groq بعد فشل: Gemini: خطأ Gemini HTTP 503 (gemini-3.5-flash): {\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}\n",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@cbfd0d608d87d0170c0204ae25b308f985b75881/output/3d9d5d5cd143/thumbnail.jpg"
+    ],
+    "post_id": "2905859667059888892",
+    "url": "https://atar12345a.blogspot.com/2026/10/blog-post_14.html",
+    "status": "LIVE",
+    "labels": [
+      "غرائب وعجائب"
+    ],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@cbfd0d608d87d0170c0204ae25b308f985b75881/output/3d9d5d5cd143/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@cbfd0d608d87d0170c0204ae25b308f985b75881/output/3d9d5d5cd143/article_middle.jpg"
+    },
+    "commit": "cbfd0d608d87d0170c0204ae25b308f985b75881",
+    "published_at_utc": "2026-10-15T03:05:00.349943+00:00"
+  }
 }
