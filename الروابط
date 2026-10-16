@@ -3,3 +3,20 @@ https://developers.google.com/oauthplayground
 https://dash.cloudflare.com/profile/api-tokens
 https://console.groq.com/
 https://console.green-api.com/
+
+BLOGGER_BLOG_ID
+BLOGGER_CLIENT_ID
+BLOGGER_CLIENT_SECRET
+BLOGGER_REFRESH_TOKEN
+CF_ACCOUNT_ID
+CF_API_TOKEN
+GEMINI_API_KEY
+GEMINI_WRITER_API_KEY
+GREENAPI_API_TOKEN
+GREENAPI_CHAT_ID
+GREENAPI_ID_INSTANCE
+GROQ_API_KEY
+
+GREENAPI_API_URL    
+GREENAPI_MEDIA_URL
+THUMBNAIL_MODE   ai_full
