@@ -1,0 +1,52 @@
+<!-- صفحة: اتصل بنا — الصقها في Blogger: الصفحات ← صفحة جديدة ← عرض HTML. الرابط الدائم المخصص: /p/contact-us.html -->
+<div class="legal-page" dir="rtl" lang="ar">
+<style>
+.legal-page{direction:rtl;text-align:right;line-height:1.95;font-size:1.05em;max-width:860px;margin:0 auto}
+.legal-page h1{font-size:1.9em;margin:.2em 0 .3em}
+.legal-page h2{font-size:1.3em;margin:1.8em 0 .5em;padding-bottom:.25em;border-bottom:1px solid rgba(128,128,128,.35)}
+.legal-page h3{font-size:1.1em;margin:1.2em 0 .3em}
+.legal-page .legal-meta{opacity:.75;font-size:.92em}
+.legal-page .legal-toc,.legal-page .legal-note{border:1px solid rgba(128,128,128,.35);background:rgba(128,128,128,.08);border-radius:8px;padding:.8em 1.2em;margin:1em 0}
+.legal-page .legal-toc ol{margin:.4em 0 0;padding-right:1.4em}
+.legal-page table{width:100%;border-collapse:collapse;margin:1em 0;font-size:.95em}
+.legal-page th,.legal-page td{border:1px solid rgba(128,128,128,.4);padding:.5em .7em;text-align:right;vertical-align:top}
+.legal-page th{background:rgba(128,128,128,.12)}
+.legal-page .legal-links{margin-top:2.2em;padding-top:1em;border-top:1px solid rgba(128,128,128,.35);font-size:.95em}
+.legal-page .legal-links a{margin-left:1em;white-space:nowrap}
+</style>
+<h1>اتصل بنا</h1>
+<p class="legal-meta">آخر تحديث: 14 أكتوبر 2026</p>
+<p>يسعدنا تواصلك مع «[اسم المدونة]». اختر الطريقة المناسبة لطلبك، وسنحاول الرد في أقرب وقت.</p>
+<div class="legal-toc"><strong>محتويات الصفحة</strong><ol><li><a href="#s1">بيانات التواصل</a></li><li><a href="#s2">بماذا تراسلنا؟</a></li><li><a href="#s3">قبل أن ترسل</a></li></ol></div>
+
+<h2 id="s1">بيانات التواصل</h2>
+<ul>
+<li><strong>البريد الإلكتروني:</strong> <a href="mailto:[البريد الإلكتروني]">[البريد الإلكتروني]</a></li>
+<li><strong>الموقع:</strong> <a href="https://atar12345a.blogspot.com">https://atar12345a.blogspot.com</a></li>
+<li><strong>المسؤول عن المدونة:</strong> [اسم المالك أو الجهة]</li>
+</ul>
+<div class="legal-note">وقت الرد المعتاد: خلال 3 أيام عمل. بعض الطلبات المستعجلة (حقوق النشر والتصحيحات الجسيمة) نعطيها الأولوية، لكننا لا نضمن الرد على كل رسالة، وخاصة الرسائل الترويجية غير المطلوبة.</div>
+
+<!-- لإضافة نموذج تواصل: في Blogger اذهب إلى التصميم ← إضافة أداة ← «نموذج الاتصال»، ثم ضع الأداة في الصفحة. -->
+
+<h2 id="s2">بماذا تراسلنا؟</h2>
+<table>
+<tr><th>الموضوع</th><th>ما يلزم ذكره في رسالتك</th></tr>
+<tr><td>اقتراح قصة أو ملاحظة عامة</td><td>رابط المصدر إن وجد، وسبب اهتمامك بالقصة.</td></tr>
+<tr><td>تصحيح خطأ في مقال</td><td>رابط المقال، والفقرة الخاطئة، والصحيح مع مصدر يدعمه. راجع <a href="/p/editorial-policy.html">السياسة التحريرية</a>.</td></tr>
+<tr><td>حقوق النشر وإزالة المحتوى</td><td>اتبع الخطوات في <a href="/p/copyright-policy.html">سياسة حقوق النشر</a> بعنوان «بلاغ حقوق نشر».</td></tr>
+<tr><td>طلب خصوصية (وصول، حذف، اعتراض)</td><td>عنوان «طلب خصوصية»، وحقك المطلوب. راجع <a href="/p/privacy-policy.html">سياسة الخصوصية</a>.</td></tr>
+<tr><td>إعلان أو تعاون</td><td>نبذة عنك أو عن جهتك، ونوع التعاون وميزانيته. راجع <a href="/p/ad-disclosure.html">إفصاح الإعلانات</a>.</td></tr>
+<tr><td>مشكلة تقنية في الموقع</td><td>الجهاز والمتصفح، ورابط الصفحة، ووصف المشكلة.</td></tr>
+</table>
+
+<h2 id="s3">قبل أن ترسل</h2>
+<ul>
+<li>لا ترسل بيانات حساسة (كلمات مرور، بيانات بطاقات، أرقام هوية).</li>
+<li>سنستخدم بريدك للرد عليك فقط، وفق <a href="/p/privacy-policy.html">سياسة الخصوصية</a>.</li>
+<li>لا نقدّم نصائح طبية أو قانونية أو مالية عبر المراسلة.</li>
+<li>نتجاهل الرسائل المسيئة أو الاحتيالية أو غير المرتبطة بالمدونة.</li>
+</ul>
+
+<div class="legal-links"><strong>صفحات أخرى:</strong> <a href="/p/privacy-policy.html">سياسة الخصوصية</a> <a href="/p/terms-of-use.html">شروط الاستخدام</a> <a href="/p/disclaimer.html">إخلاء المسؤولية</a> <a href="/p/cookie-policy.html">الكوكيز</a> <a href="/p/about-us.html">من نحن</a> <a href="/p/contact-us.html">اتصل بنا</a> <a href="/p/copyright-policy.html">حقوق النشر</a> <a href="/p/editorial-policy.html">السياسة التحريرية</a> <a href="/p/ad-disclosure.html">إفصاح الإعلانات</a></div>
+</div>
