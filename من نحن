@@ -1,0 +1,51 @@
+<!-- صفحة: من نحن — الصقها في Blogger: الصفحات ← صفحة جديدة ← عرض HTML. الرابط الدائم المخصص: /p/about-us.html -->
+<div class="legal-page" dir="rtl" lang="ar">
+<style>
+.legal-page{direction:rtl;text-align:right;line-height:1.95;font-size:1.05em;max-width:860px;margin:0 auto}
+.legal-page h1{font-size:1.9em;margin:.2em 0 .3em}
+.legal-page h2{font-size:1.3em;margin:1.8em 0 .5em;padding-bottom:.25em;border-bottom:1px solid rgba(128,128,128,.35)}
+.legal-page h3{font-size:1.1em;margin:1.2em 0 .3em}
+.legal-page .legal-meta{opacity:.75;font-size:.92em}
+.legal-page .legal-toc,.legal-page .legal-note{border:1px solid rgba(128,128,128,.35);background:rgba(128,128,128,.08);border-radius:8px;padding:.8em 1.2em;margin:1em 0}
+.legal-page .legal-toc ol{margin:.4em 0 0;padding-right:1.4em}
+.legal-page table{width:100%;border-collapse:collapse;margin:1em 0;font-size:.95em}
+.legal-page th,.legal-page td{border:1px solid rgba(128,128,128,.4);padding:.5em .7em;text-align:right;vertical-align:top}
+.legal-page th{background:rgba(128,128,128,.12)}
+.legal-page .legal-links{margin-top:2.2em;padding-top:1em;border-top:1px solid rgba(128,128,128,.35);font-size:.95em}
+.legal-page .legal-links a{margin-left:1em;white-space:nowrap}
+</style>
+<h1>من نحن</h1>
+<p class="legal-meta">آخر تحديث: 14 أكتوبر 2026</p>
+<p>مرحباً بك في «[اسم المدونة]». نحكي قصصاً من حول العالم تستوقف القارئ: حقائق غريبة، ولحظات نجاة، ومواقف إنسانية صادقة، وما يتحدث عنه الناس الآن.</p>
+<div class="legal-toc"><strong>محتويات الصفحة</strong><ol><li><a href="#s1">ماذا نقدّم</a></li><li><a href="#s2">كيف نصنع المحتوى (بكل شفافية)</a></li><li><a href="#s3">قيمنا</a></li><li><a href="#s4">كيف تموَّل المدونة</a></li><li><a href="#s5">تواصل معنا</a></li></ol></div>
+
+<h2 id="s1">ماذا نقدّم</h2>
+<table>
+<tr><th>القسم</th><th>ما ستجده فيه</th></tr>
+<tr><td>غرائب وعجائب</td><td>حقائق وأحداث غير مألوفة تثير الفضول وتفتح باب الدهشة.</td></tr>
+<tr><td>معجزات ونجاة</td><td>قصص ناجين وصدف مذهلة ولحظات كان فيها المصير على المحك.</td></tr>
+<tr><td>قصص إنسانية وواقعية</td><td>مواقف مؤثرة وتضحيات وقصص من الحياة تلامس القلب.</td></tr>
+<tr><td>تريند</td><td>ما ينتشر الآن على الإنترنت ولماذا أثار كل هذه الضجة.</td></tr>
+<tr><td>حول العالم</td><td>عادات وأماكن وأحداث من ثقافات وبلدان مختلفة.</td></tr>
+</table>
+
+<h2 id="s2">كيف نصنع المحتوى (بكل شفافية)</h2>
+<p>نختار قصصاً منشورة في مصادر إخبارية وترفيهية عالمية، ونعيد كتابتها بالعربية وبأسلوبنا الخاص، ونضيف إليها تعليقاً وسياقاً وعناوين تساعد القارئ. نستعين في ذلك بأدوات الذكاء الاصطناعي في الصياغة والعناوين وبعض الصور التوضيحية، ونطبّق فحوصاً آلية لمقارنة الأسماء والأرقام بالمصدر. وهذه الأدوات ليست معصومة، لذلك نرحّب بأي تصحيح. تفاصيل أكثر في <a href="/p/editorial-policy.html">السياسة التحريرية</a>.</p>
+<div class="legal-note">لا نعمل صحفيين ميدانيين، ولا ندّعي تحقيقاً مستقلاً في القصص التي ننشرها. نحن نقرأ ونعيد الصياغة ونعلّق، ونصرّح بذلك.</div>
+
+<h2 id="s3">قيمنا</h2>
+<ul>
+<li><strong>الصدق:</strong> لا نخترع أسماء ولا أرقاماً ولا اقتباسات، ونميّز الادعاءات عن الحقائق.</li>
+<li><strong>الاحترام:</strong> نتعامل بحساسية مع القصص الإنسانية ولا نستغل الألم لجذب النقرات.</li>
+<li><strong>الوضوح:</strong> عناوين تعكس المحتوى، وفصل واضح بين الخبر والرأي.</li>
+<li><strong>المسؤولية:</strong> نصحح أخطاءنا ونحترم حقوق الآخرين.</li>
+</ul>
+
+<h2 id="s4">كيف تموَّل المدونة</h2>
+<p>المدونة مجانية للقرّاء، وتعتمد على الإعلانات (ومنها Google AdSense) وقد تتضمن روابط تسويقية بعمولة. لا تؤثر الإعلانات على ما ننشره أو كيف نرويه. التفاصيل في <a href="/p/ad-disclosure.html">إفصاح الإعلانات</a>.</p>
+
+<h2 id="s5">تواصل معنا</h2>
+<p>يسعدنا سماعك: اقتراح قصة، أو تصحيح، أو تعاون. راسلنا على <a href="mailto:[البريد الإلكتروني]">[البريد الإلكتروني]</a> أو عبر <a href="/p/contact-us.html">صفحة التواصل</a>.</p>
+
+<div class="legal-links"><strong>صفحات أخرى:</strong> <a href="/p/privacy-policy.html">سياسة الخصوصية</a> <a href="/p/terms-of-use.html">شروط الاستخدام</a> <a href="/p/disclaimer.html">إخلاء المسؤولية</a> <a href="/p/cookie-policy.html">الكوكيز</a> <a href="/p/about-us.html">من نحن</a> <a href="/p/contact-us.html">اتصل بنا</a> <a href="/p/copyright-policy.html">حقوق النشر</a> <a href="/p/editorial-policy.html">السياسة التحريرية</a> <a href="/p/ad-disclosure.html">إفصاح الإعلانات</a></div>
+</div>
