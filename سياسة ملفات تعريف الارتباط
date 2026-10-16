@@ -1,0 +1,76 @@
+<!-- صفحة: سياسة ملفات تعريف الارتباط (الكوكيز) — الصقها في Blogger: الصفحات ← صفحة جديدة ← عرض HTML. الرابط الدائم المخصص: /p/cookie-policy.html -->
+<div class="legal-page" dir="rtl" lang="ar">
+<style>
+.legal-page{direction:rtl;text-align:right;line-height:1.95;font-size:1.05em;max-width:860px;margin:0 auto}
+.legal-page h1{font-size:1.9em;margin:.2em 0 .3em}
+.legal-page h2{font-size:1.3em;margin:1.8em 0 .5em;padding-bottom:.25em;border-bottom:1px solid rgba(128,128,128,.35)}
+.legal-page h3{font-size:1.1em;margin:1.2em 0 .3em}
+.legal-page .legal-meta{opacity:.75;font-size:.92em}
+.legal-page .legal-toc,.legal-page .legal-note{border:1px solid rgba(128,128,128,.35);background:rgba(128,128,128,.08);border-radius:8px;padding:.8em 1.2em;margin:1em 0}
+.legal-page .legal-toc ol{margin:.4em 0 0;padding-right:1.4em}
+.legal-page table{width:100%;border-collapse:collapse;margin:1em 0;font-size:.95em}
+.legal-page th,.legal-page td{border:1px solid rgba(128,128,128,.4);padding:.5em .7em;text-align:right;vertical-align:top}
+.legal-page th{background:rgba(128,128,128,.12)}
+.legal-page .legal-links{margin-top:2.2em;padding-top:1em;border-top:1px solid rgba(128,128,128,.35);font-size:.95em}
+.legal-page .legal-links a{margin-left:1em;white-space:nowrap}
+</style>
+<h1>سياسة ملفات تعريف الارتباط (الكوكيز)</h1>
+<p class="legal-meta">آخر تحديث: 14 أكتوبر 2026</p>
+<p>توضّح هذه السياسة ما هي ملفات تعريف الارتباط (الكوكيز)، وكيف تستخدمها مدونة «[اسم المدونة]» (https://atar12345a.blogspot.com) والجهات الشريكة، وكيف تتحكم بها. وهي مكمّلة لـ<a href="/p/privacy-policy.html">سياسة الخصوصية</a>.</p>
+<div class="legal-toc"><strong>محتويات الصفحة</strong><ol><li><a href="#s1">ما هي الكوكيز؟</a></li><li><a href="#s2">أنواع الكوكيز التي قد نستخدمها</a></li><li><a href="#s3">جهات قد تضع كوكيز عند زيارتك</a></li><li><a href="#s4">موافقتك وإدارة اختياراتك</a></li><li><a href="#s5">كيف تعطّل الكوكيز أو تحذفها</a></li><li><a href="#s6">مدة بقاء الكوكيز</a></li><li><a href="#s7">التحديثات</a></li><li><a href="#s8">تواصل معنا</a></li></ol></div>
+
+<h2 id="s1">ما هي الكوكيز؟</h2>
+<p>الكوكيز ملفات نصية صغيرة يخزّنها موقع ما في متصفحك أو جهازك لتذكّر معلومات عن زيارتك. وهناك تقنيات مشابهة (التخزين المحلي، ووسوم البيكسل، ومعرّفات الجهاز) نشير إليها جميعاً بكلمة «الكوكيز».</p>
+
+<h2 id="s2">أنواع الكوكيز التي قد نستخدمها</h2>
+<table>
+<tr><th>النوع</th><th>الغرض</th><th>موافقتك مطلوبة؟</th></tr>
+<tr><td>ضرورية</td><td>تشغيل المدونة وتأمينها وتذكّر اختيارك للكوكيز</td><td>لا</td></tr>
+<tr><td>تحليلية / إحصائية</td><td>معرفة عدد الزوار والصفحات الأكثر قراءة بصورة مجمّعة</td><td>نعم في الاتحاد الأوروبي والمملكة المتحدة وسويسرا</td></tr>
+<tr><td>إعلانية</td><td>عرض إعلانات وقياس أدائها وتقليل تكرارها، وتخصيصها بحسب اهتماماتك</td><td>نعم في الاتحاد الأوروبي والمملكة المتحدة وسويسرا، وحيث يلزم القانون</td></tr>
+<tr><td>وظيفية / مضمَّنة</td><td>تشغيل مضمَّنات الأطراف الثالثة (مثل أزرار المشاركة)</td><td>بحسب نوع الخدمة</td></tr>
+</table>
+
+<h2 id="s3">جهات قد تضع كوكيز عند زيارتك</h2>
+<table>
+<tr><th>الجهة</th><th>الغرض</th><th>أمثلة (قد تتغير الأسماء)</th></tr>
+<tr><td>Google / Blogger</td><td>تشغيل المدونة والأمان والتعليقات</td><td>كوكيز الجلسة والتفضيلات والأمان</td></tr>
+<tr><td>Google AdSense / DoubleClick</td><td>الإعلانات وقياسها ومنع الاحتيال</td><td>مثل <code>__gads</code> و<code>__gpi</code> وكوكيز على نطاقات Google للإعلان</td></tr>
+<tr><td>Google Analytics (إن كان مفعّلاً)</td><td>إحصاءات الاستخدام</td><td>مثل <code>_ga</code></td></tr>
+<tr><td>منصات التواصل الاجتماعي</td><td>المشاركة والمضمَّنات عند التفاعل معها</td><td>بحسب كل منصة</td></tr>
+</table>
+<p>الجدول إرشادي لأن الأسماء والمدد تحدّدها الجهات الخارجية وتغيّرها دون علمنا. تستطيع رؤية الكوكيز الفعلية من أدوات المطوّر في متصفحك.</p>
+
+<h2 id="s4">موافقتك وإدارة اختياراتك</h2>
+<ul>
+<li><strong>الاتحاد الأوروبي والمملكة المتحدة وسويسرا:</strong> نعرض لافتة موافقة (CMP) تتيح لك قبول الكوكيز غير الضرورية أو رفضها أو تخصيصها. ولا تُفعَّل الكوكيز الإعلانية والتحليلية قبل موافقتك حيث يلزم ذلك. يمكنك تغيير اختيارك أو سحبه في أي وقت من رابط «إعدادات الخصوصية» إن ظهر في المدونة، أو بمسح كوكيز المتصفح لتظهر اللافتة مجدداً.</li>
+<li><strong>الولايات المتحدة:</strong> قد تظهر لك لافتة خصوصية تتيح الاعتراض على «بيع» البيانات أو «مشاركتها» لأغراض الإعلان.</li>
+<li><strong>بقية العالم:</strong> يمكنك التحكم عبر إعدادات المتصفح والأدوات أدناه.</li>
+</ul>
+
+<h2 id="s5">كيف تعطّل الكوكيز أو تحذفها</h2>
+<h3>من المتصفح</h3>
+<ul>
+<li><strong>Chrome:</strong> الإعدادات ← الخصوصية والأمان ← ملفات تعريف الارتباط وبيانات المواقع الأخرى.</li>
+<li><strong>Firefox:</strong> الإعدادات ← الخصوصية والأمان ← ملفات تعريف الارتباط وبيانات المواقع.</li>
+<li><strong>Safari:</strong> الإعدادات ← الخصوصية ← إدارة بيانات المواقع.</li>
+<li><strong>Edge:</strong> الإعدادات ← ملفات تعريف الارتباط وأذونات المواقع.</li>
+</ul>
+<h3>من أدوات الإعلانات</h3>
+<ul>
+<li><a href="https://adssettings.google.com" rel="noopener nofollow" target="_blank">إعدادات الإعلانات في Google</a> لإيقاف الإعلانات المخصّصة.</li>
+<li><a href="https://www.aboutads.info/choices/" rel="noopener nofollow" target="_blank">aboutads.info/choices</a> و<a href="https://www.youronlinechoices.eu" rel="noopener nofollow" target="_blank">youronlinechoices.eu</a> لإيقاف كوكيز جهات الإعلان الخارجية.</li>
+</ul>
+<p>إيقاف الكوكيز لا يمنع الإعلانات، لكنه يجعلها أقل صلة باهتماماتك. وقد لا تعمل بعض ميزات المدونة كما ينبغي عند تعطيل الكوكيز الضرورية.</p>
+
+<h2 id="s6">مدة بقاء الكوكيز</h2>
+<p>بعضها مؤقت يُحذف عند إغلاق المتصفح (كوكيز الجلسة)، وبعضها دائم يبقى مدة محددة قد تمتد من أيام إلى شهور بحسب الجهة التي وضعته.</p>
+
+<h2 id="s7">التحديثات</h2>
+<p>قد نحدّث هذه السياسة مع تغيّر الخدمات أو القوانين، وسنعدّل تاريخ التحديث أعلاها.</p>
+
+<h2 id="s8">تواصل معنا</h2>
+<p>لأي استفسار: <a href="mailto:[البريد الإلكتروني]">[البريد الإلكتروني]</a> أو <a href="/p/contact-us.html">اتصل بنا</a>.</p>
+
+<div class="legal-links"><strong>صفحات أخرى:</strong> <a href="/p/privacy-policy.html">سياسة الخصوصية</a> <a href="/p/terms-of-use.html">شروط الاستخدام</a> <a href="/p/disclaimer.html">إخلاء المسؤولية</a> <a href="/p/cookie-policy.html">الكوكيز</a> <a href="/p/about-us.html">من نحن</a> <a href="/p/contact-us.html">اتصل بنا</a> <a href="/p/copyright-policy.html">حقوق النشر</a> <a href="/p/editorial-policy.html">السياسة التحريرية</a> <a href="/p/ad-disclosure.html">إفصاح الإعلانات</a></div>
+</div>
