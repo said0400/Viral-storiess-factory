@@ -189,5 +189,23 @@
   },
   "image_note": "",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@7b1a26690f75d5a766adca820db5c709e5ecb73d/output/a81b283e7757/thumbnail.jpg"
+    ],
+    "post_id": "1996150586130768852",
+    "url": "https://atar12345a.blogspot.com/2026/10/blog-post_16.html",
+    "status": "LIVE",
+    "labels": [
+      "قصص إنسانية وواقعية"
+    ],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@7b1a26690f75d5a766adca820db5c709e5ecb73d/output/a81b283e7757/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@7b1a26690f75d5a766adca820db5c709e5ecb73d/output/a81b283e7757/article_middle.jpg"
+    },
+    "commit": "7b1a26690f75d5a766adca820db5c709e5ecb73d",
+    "published_at_utc": "2026-10-16T18:18:00.194053+00:00"
+  }
 }
