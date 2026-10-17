@@ -180,5 +180,23 @@
   },
   "image_note": "",
   "rights_note": "لا يعني ظهور الصورة في المقال أن إعادة نشرها مسموحة. تحقق من الترخيص أو الإذن قبل النشر.",
-  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر."
+  "verification_note": "أعيدت صياغة المقال اعتمادًا على النص المستخرج فقط؛ لم يتم التحقق من الوقائع بشكل مستقل. المراجعة الآلية في article_review قد تخطئ، فراجع النص قبل النشر.",
+  "blogger": {
+    "blogger_images": [
+      "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@1222ccc5c5a62a03f4de7d5105fb2ee3ae4deed1/output/98b16e34d119/thumbnail.jpg"
+    ],
+    "post_id": "7723012571161424516",
+    "url": "https://atar12345a.blogspot.com/2026/10/blog-post_17.html",
+    "status": "LIVE",
+    "labels": [
+      "معجزات ونجاة"
+    ],
+    "action": "insert",
+    "images": {
+      "thumbnail.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@1222ccc5c5a62a03f4de7d5105fb2ee3ae4deed1/output/98b16e34d119/thumbnail.jpg",
+      "article_middle.jpg": "https://cdn.jsdelivr.net/gh/said0400/Viral-storiess-factory@1222ccc5c5a62a03f4de7d5105fb2ee3ae4deed1/output/98b16e34d119/article_middle.jpg"
+    },
+    "commit": "1222ccc5c5a62a03f4de7d5105fb2ee3ae4deed1",
+    "published_at_utc": "2026-10-17T17:15:04.298910+00:00"
+  }
 }
