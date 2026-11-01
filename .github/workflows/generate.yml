@@ -25,7 +25,7 @@ on:
         default: false
         type: boolean
       publish_to_blogger:
-        description: "النشر التلقائي على Blogger (ألغِه في تشغيلات الاختبار)"
+        description: "النشر على Blogger عبر Make (ألغِه في تشغيلات الاختبار)"
         required: false
         default: true
         type: boolean
@@ -182,10 +182,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
-          BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
-          BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
-          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
+          MAKE_WEBHOOK_SECRET: ${{ secrets.MAKE_WEBHOOK_SECRET }}
           GREENAPI_ID_INSTANCE: ${{ secrets.GREENAPI_ID_INSTANCE }}
           GREENAPI_API_TOKEN: ${{ secrets.GREENAPI_API_TOKEN }}
           GREENAPI_CHAT_ID: ${{ secrets.GREENAPI_CHAT_ID }}
@@ -302,7 +300,7 @@ jobs:
           git rebase "origin/$BRANCH"
           git push origin "HEAD:refs/heads/$BRANCH"
 
-      - name: Publish to Blogger
+      - name: Publish via Make
         if: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.publish_to_blogger }}
         continue-on-error: true
         shell: bash
@@ -311,16 +309,14 @@ jobs:
           FORCE_REPROCESS: ${{ inputs.force_reprocess }}
           BLOGGER_LABEL: ${{ inputs.blogger_label }}
           BLOGGER_DRAFT: ${{ vars.BLOGGER_DRAFT }}
-          BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
-          BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
-          BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
-          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
+          MAKE_WEBHOOK_SECRET: ${{ secrets.MAKE_WEBHOOK_SECRET }}
           PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
           # الصور دُفعت في الخطوة السابقة؛ نستخدم commit الحالي في روابط CDN
           export BLOGGER_COMMIT_SHA="$(git rev-parse HEAD)"
-          python blogger_publish.py
+          python make_publish.py
 
       - name: Commit Blogger result
         if: ${{ needs.schedule-gate.outputs.unattended == 'true' || inputs.publish_to_blogger }}
