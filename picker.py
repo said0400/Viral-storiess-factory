@@ -5,18 +5,22 @@
 2) يستبعد الروابط التي عولجت سابقًا (output/<hash>/result.json).
 3) يطلب من الذكاء الاصطناعي (Gemini ثم Groq، عبر writer._call) تصنيف المقالات
    وترتيب أفضل المرشحين لقابلية الانتشار.
-4) يجرّب المرشحين بالترتيب بـ extract_article ويعتمد أول مقال ينجح استخراجه.
-5) يكتب article_url و category في GITHUB_OUTPUT.
+4) يفضّل تصنيفًا لم يُنشر منه اليوم (بتوقيت المغرب) كي لا يتشابه مقالا اليوم؛
+   تفضيل لا منع: إن لم توجد قصة جيدة بتصنيف جديد تُختار الأفضل أيًّا كان تصنيفها.
+5) يجرّب المرشحين بالترتيب بـ extract_article ويعتمد أول مقال ينجح استخراجه.
+6) يكتب article_url و category في GITHUB_OUTPUT.
 
 التشغيل: python picker.py
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin, urldefrag
 
@@ -180,6 +184,65 @@ def collect_items() -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# تصنيفات اليوم: تجنّب تكرار التصنيف نفسه بين مقالتي اليوم
+# ---------------------------------------------------------------------------
+
+def _morocco_tz():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Africa/Casablanca")
+    except Exception:  # noqa: BLE001 - لا tzdata: نكتفي بتوقيت UTC
+        return timezone.utc
+
+
+def categories_today() -> set[str]:
+    """تصنيفات المقالات التي وُلّدت اليوم بتوقيت المغرب (من output/*/result.json)."""
+    tz = _morocco_tz()
+    today = datetime.now(tz).date()
+    found: set[str] = set()
+
+    for path in pipeline.OUTPUT_ROOT.glob("*/result.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("rejected"):
+            continue
+        category, stamp = data.get("category"), data.get("generated_at_utc")
+        if category not in CATEGORIES or not isinstance(stamp, str):
+            continue
+        try:
+            when = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when.astimezone(tz).date() == today:
+            found.add(category)
+    return found
+
+
+def prefer_new_categories(
+    ranking: list[dict[str, Any]], avoid: set[str]
+) -> list[dict[str, Any]]:
+    """
+    يقدّم المرشحين بتصنيف لم يُنشر منه اليوم، مع حفظ ترتيبهم الأصلي.
+    تفضيل لا منع: المرشحون بتصنيف مكرر يبقون في آخر القائمة احتياطًا.
+    """
+    if not avoid:
+        return ranking
+    fresh = [e for e in ranking if e["category"] not in avoid]
+    repeated = [e for e in ranking if e["category"] in avoid]
+    if fresh and repeated:
+        print("تفضيل تصنيف جديد: "
+              f"سبق نشر ({'، '.join(sorted(avoid))}) اليوم؛ "
+              f"{len(repeated)} مرشحين بتصنيف مكرر أُخّروا.")
+    elif repeated:
+        print("تنبيه: كل المرشحين من تصنيف نُشر اليوم؛ يُختار الأفضل منها.")
+    return fresh + repeated
+
+
+# ---------------------------------------------------------------------------
 # التصنيف والترتيب بالذكاء الاصطناعي
 # ---------------------------------------------------------------------------
 
@@ -229,12 +292,19 @@ def _validate(raw: dict[str, Any], count: int) -> list[dict[str, Any]]:
     return ranking[:MAX_CANDIDATES_TRIED]
 
 
-def _rank_items_once(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
+def _rank_items_once(
+    items: list[dict[str, str]], avoid: set[str] | None = None
+) -> tuple[list[dict[str, Any]], str]:
     listing = "\n".join(
         f"[{i}] ({it['source']}) {it['title']} — {it['summary']}"
         for i, it in enumerate(items)
     )
     user = f"<articles>\n{listing}\n</articles>"
+    if avoid:
+        user += (
+            "\n\nنُشر اليوم مقال من التصنيف: " + "، ".join(sorted(avoid))
+            + ". فضّل تصنيفًا آخر في الترتيب إن وُجدت قصة جيدة بتصنيف مختلف."
+        )
     errors: list[str] = []
 
     for provider in writer._providers():
@@ -278,7 +348,9 @@ def heuristic_ranking(items: list[dict[str, str]]) -> list[dict[str, Any]]:
     ]
 
 
-def rank_items(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
+def rank_items(
+    items: list[dict[str, str]], avoid: set[str] | None = None
+) -> tuple[list[dict[str, Any]], str]:
     """
     يعيد المحاولة عدة جولات مع انتظار بينها إن تعثر المزودون (ازدحام أو حصة)،
     ثم يلجأ إلى ترتيب بسيط بدل أن يتوقف الاختيار.
@@ -291,12 +363,12 @@ def rank_items(items: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str]:
 
     rounds = max(1, number("RANK_ROUNDS", 3))
     wait = max(0, number("RANK_WAIT_SECONDS", 45))
-    for number in range(1, rounds + 1):
+    for attempt in range(1, rounds + 1):
         try:
-            return _rank_items_once(items)
+            return _rank_items_once(items, avoid)
         except pipeline.ProjectError as exc:
-            print(f"تحذير: تعثر تحليل الذكاء الاصطناعي (الجولة {number}/{rounds}): {exc}")
-            if number < rounds:
+            print(f"تحذير: تعثر تحليل الذكاء الاصطناعي (الجولة {attempt}/{rounds}): {exc}")
+            if attempt < rounds:
                 print(f"انتظار {wait} ثانية ثم إعادة المحاولة...")
                 time.sleep(wait)
     print("::warning title=ترتيب احتياطي::تعذر الذكاء الاصطناعي؛ "
@@ -362,7 +434,9 @@ def pick_story() -> tuple[dict[str, str], dict[str, Any]]:
     items = collect_items()
     if not items:
         raise pipeline.ProjectError("لم يُجلب أي مقال جديد من المصادر.")
-    ranking, _ = rank_items(items)
+    avoid = categories_today()
+    ranking, _ = rank_items(items, avoid)
+    ranking = prefer_new_categories(ranking, avoid)
     item, entry, _ = choose(items, ranking)
     return item, entry
 
@@ -375,8 +449,13 @@ def main() -> int:
             raise pipeline.ProjectError("لم يُجلب أي مقال جديد من المصادر.")
         print(f"\nإجمالي المرشحين: {len(items)}")
 
+        avoid = categories_today()
+        if avoid:
+            print("تصنيفات نُشرت اليوم:", "، ".join(sorted(avoid)))
+
         print("2/3: التحليل بالذكاء الاصطناعي...")
-        ranking, how = rank_items(items)
+        ranking, how = rank_items(items, avoid)
+        ranking = prefer_new_categories(ranking, avoid)
 
         print("3/3: اعتماد أول مرشح صالح...")
         item, entry, _ = choose(items, ranking)
