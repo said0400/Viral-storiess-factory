@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import os
 import re
-import socket
 import sys
-import unicodedata
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -16,29 +13,14 @@ from urllib.parse import urljoin, urlparse, urldefrag
 import requests
 import trafilatura
 from bs4 import BeautifulSoup, UnicodeDammit
-
-try:
-    import arabic_reshaper
-    from bidi.algorithm import get_display
-    ARABIC_TEXT_OK = True
-except ImportError:  # يُتخطى النص على الصورة مع تحذير
-    ARABIC_TEXT_OK = False
-from PIL import (
-    Image,
-    ImageDraw,
-    ImageEnhance,
-    ImageFilter,
-    ImageFont,
-    ImageOps,
-    ImageStat,
-    UnidentifiedImageError,
-)
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 import gemini
 import thumbnail
 import wide_collage
 import writer
 import related
+from fb_cover import create_design
 from grok import (
     MAX_VISION_IMAGES,
     default_gallery,
@@ -49,16 +31,7 @@ from grok import (
 
 
 OUTPUT_ROOT = Path("output")
-IMAGE_SIZE = 1080
-SS = 2                      # دقة مضاعفة لنعومة الحواف
-GUTTER = 10
-GUTTER_COLOR = "#FFFFFF"
 
-FONT_FILENAME = "IBMPlexSansArabic-Bold.ttf"
-FONT_FALLBACKS = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-)
-TEXT_ACCENT = "#FFD400"
 MAX_PAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTEMPTS = 14
@@ -77,15 +50,20 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-SESSION = requests.Session()
-SESSION.headers.update({
+# حزمة ترويسات كاملة لتبدو كمتصفح حقيقي يتصفح مقالًا طبيعيًا
+REQUEST_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
     ),
-    "Accept-Language": "ar,en;q=0.8",
-})
+    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+    "Referer": "https://google.com",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+SESSION = requests.Session()
 
 
 class ProjectError(Exception):
@@ -95,6 +73,10 @@ class ProjectError(Exception):
 class StoryRejected(ProjectError):
     """القصة مرفوضة (مخالفات واقعية في المقال): يُختار موضوع آخر بدل النشر."""
 
+
+# ---------------------------------------------------------------------------
+# التنزيل واستخراج المقال
+# ---------------------------------------------------------------------------
 
 def validate_public_url(url: str) -> str:
     if not isinstance(url, str) or not url.strip():
@@ -113,33 +95,16 @@ def validate_public_url(url: str) -> str:
     if hostname in {"localhost", "localhost.localdomain", "127.0.0.1"}:
         raise ProjectError("الروابط المحلية غير مسموحة.")
 
-    # تجاوز الفحص الصارم لـ socket لتجنب مشاكل بروكسي GitHub المتغيرة
     return url
 
 
-def safe_get(
-    url: str,
-    max_bytes: int,
-    expected_image: bool = False,
-):
-    current_url = url
-    validate_public_url(current_url)
-
-    # تزييف حزمة كاملة من الـ Headers لتبدو كمتصفح حقيقي يتصفح مقالاً طبيعياً
-    custom_headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
-        "Referer": "https://google.com",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
-    }
+def safe_get(url: str, max_bytes: int, expected_image: bool = False):
+    validate_public_url(url)
 
     try:
-        # تفعيل allow_redirects=True وتمرير الـ headers بشكل صريح للسيرفر لتخطي Cloudflare
         response = SESSION.get(
-            current_url,
-            headers=custom_headers,
+            url,
+            headers=REQUEST_HEADERS,
             timeout=REQUEST_TIMEOUT,
             allow_redirects=True,
             stream=True,
@@ -180,9 +145,7 @@ def safe_get(
     finally:
         response.close()
 
-    return response.url or current_url, content_type, bytes(data)
-
-    raise ProjectError("تجاوز الرابط عدد التحويلات المسموح به.")
+    return response.url or url, content_type, bytes(data)
 
 
 def clean_text(value: str | None) -> str:
@@ -332,6 +295,10 @@ def extract_article(article_url: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# تنزيل الصور
+# ---------------------------------------------------------------------------
+
 def average_hash(image: Image.Image) -> int:
     small = image.convert("L").resize(
         (8, 8), Image.Resampling.LANCZOS
@@ -410,802 +377,8 @@ def download_article_images(image_urls: list[str]):
 
 
 # ---------------------------------------------------------------------------
-# تصميم الصورة
-# ---------------------------------------------------------------------------
-
-def smart_window(image, box, aspect, mode="cover",
-                 padding=0.12, min_frac=0.2):
-    """
-    يحسب نافذة قص بنسبة أبعاد الخانة تمامًا وتحتوي العنصر المهم.
-    cover: أكبر نافذة ممكنة متمركزة على العنصر (للخلفيات والألواح).
-    tight: نافذة محكمة حول العنصر مع هامش (للتفصيل المكبر).
-    """
-    W, H = image.size
-    l, t, r, b = box
-    bl, br, bt, bb = l * W, r * W, t * H, b * H
-    cx, cy = (bl + br) / 2, (bt + bb) / 2
-
-    if W / H > aspect:
-        max_w, max_h = H * aspect, H
-    else:
-        max_w, max_h = W, W / aspect
-
-    if mode == "cover":
-        win_w, win_h = max_w, max_h
-    else:
-        bw = max((br - bl) * (1 + 2 * padding), 1.0)
-        bh = max((bb - bt) * (1 + 2 * padding), 1.0)
-        win_w = bw if bw / bh > aspect else bh * aspect
-        win_w = min(max(win_w, max_w * min_frac), max_w)
-        win_h = win_w / aspect
-
-    x0 = min(max(cx - win_w / 2, 0), W - win_w)
-    y0 = min(max(cy - win_h / 2, 0), H - win_h)
-
-    # إن كان العنصر يتسع في النافذة فاجعله داخلها بالكامل.
-    if br - bl <= win_w:
-        x0 = min(max(x0, br - win_w), bl)
-    if bb - bt <= win_h:
-        y0 = min(max(y0, bb - win_h), bt)
-    x0 = min(max(x0, 0), W - win_w)
-    y0 = min(max(y0, 0), H - win_h)
-
-    return (x0, y0, x0 + win_w, y0 + win_h)
-
-
-def crop_window(image, win, size):
-    W, H = image.size
-    x0 = max(0, min(W - 1, round(win[0])))
-    y0 = max(0, min(H - 1, round(win[1])))
-    x1 = max(x0 + 1, min(W, round(win[2])))
-    y1 = max(y0 + 1, min(H, round(win[3])))
-    return ImageOps.fit(
-        image.crop((x0, y0, x1, y1)),
-        size,
-        method=Image.Resampling.LANCZOS,
-    )
-
-
-def polish(tile):
-    tile = ImageEnhance.Contrast(tile).enhance(1.06)
-    tile = ImageEnhance.Color(tile).enhance(1.10)
-    return ImageEnhance.Sharpness(tile).enhance(1.15)
-
-
-def choose_anchor(image, item, aspect):
-    """
-    إن اتسع العنصر الرئيسي في نافذة القص فهو المرجع، وإلا (لوحة نحيفة
-    ووجه عريض مثلًا) تُثبَّت النافذة على التفصيل المهم كالعينين لئلا تُقطع.
-    """
-    W, H = image.size
-    if W / H > aspect:
-        max_w, max_h = H * aspect, H
-    else:
-        max_w, max_h = W, W / aspect
-
-    sb = item["subject_box"]
-    fits = (
-        (sb[2] - sb[0]) * W <= max_w * 1.02
-        and (sb[3] - sb[1]) * H <= max_h * 1.02
-    )
-    if fits:
-        return sb
-    return item.get("detail_box") or sb
-
-
-def paste_tile(canvas, image, item, box, keep=None):
-    x0, y0, x1, y1 = box
-    w, h = x1 - x0, y1 - y0
-    anchor = choose_anchor(image, item, w / h)
-    win = smart_window(image, anchor, w / h, "cover")
-    canvas.paste(polish(crop_window(image, win, (w, h))), (x0, y0))
-
-    if keep is not None:
-        W, H = image.size
-        ww, wh = win[2] - win[0], win[3] - win[1]
-        for b in item.get("avoid_boxes", []):
-            keep.append((
-                (
-                    x0 + (b[0] * W - win[0]) / ww * w,
-                    y0 + (b[1] * H - win[1]) / wh * h,
-                    x0 + (b[2] * W - win[0]) / ww * w,
-                    y0 + (b[3] * H - win[1]) / wh * h,
-                ),
-                6.0,
-            ))
-
-
-def paste_inset(canvas, tile, x, y, shape, border):
-    d = tile.width
-    mask = Image.new("L", (d, d), 0)
-    mdraw = ImageDraw.Draw(mask)
-    if shape == "circle":
-        mdraw.ellipse((0, 0, d - 1, d - 1), fill=255)
-    else:
-        mdraw.rounded_rectangle(
-            (0, 0, d - 1, d - 1), radius=int(d * 0.07), fill=255
-        )
-
-    # ظل ناعم
-    shadow = Image.new("L", canvas.size, 0)
-    shadow.paste(mask, (x + 6 * SS, y + 8 * SS))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(12 * SS))
-    shadow = shadow.point(lambda v: int(v * 0.55))
-    canvas.paste(
-        (0, 0, 0), (0, 0, canvas.width, canvas.height), shadow
-    )
-
-    canvas.paste(tile, (x, y), mask)
-    draw = ImageDraw.Draw(canvas)
-    box = (x, y, x + d - 1, y + d - 1)
-    if shape == "circle":
-        draw.ellipse(box, outline="white", width=border)
-    else:
-        draw.rounded_rectangle(
-            box, radius=int(d * 0.07), outline="white", width=border
-        )
-
-
-def window_is_flat(image, win, threshold=14.0):
-    """منطقة شبه موحدة (سواد، سماء، جدار) لا تصلح للتكبير."""
-    crop = image.crop(tuple(int(v) for v in win)).convert("L")
-    crop = crop.resize((64, 64))
-    return ImageStat.Stat(crop).stddev[0] < threshold
-
-
-def make_detail_window(image, box, mw):
-    """
-    نافذة تفصيل مربعة بتكبير حقيقي (نحو 1.5x إلى 3x) قياسًا بالخلفية.
-    تعيد (النافذة، نسبة قطر الدائرة الصغيرة إلى الإطار).
-    """
-    W, H = image.size
-    tight = smart_window(image, box, 1.0, "tight", padding=0.08,
-                         min_frac=0.05)
-    r = (tight[2] - tight[0]) / mw
-    d_frac = min(0.38, max(0.27, 1.4 * r))
-    r = min(max(r, d_frac / 3.2), d_frac / 1.5)
-    dw = min(r * mw, W, H)
-
-    cx = (box[0] + box[2]) / 2 * W
-    cy = (box[1] + box[3]) / 2 * H
-    x0 = min(max(cx - dw / 2, 0), W - dw)
-    y0 = min(max(cy - dw / 2, 0), H - dw)
-    return (x0, y0, x0 + dw, y0 + dw), d_frac
-
-
-def pick_detail(image, item, mw):
-    """يجرّب صندوق النموذج ثم مركز العنصر، ويرفض المناطق الفارغة."""
-    sb = item["subject_box"]
-    cx, cy = (sb[0] + sb[2]) / 2, (sb[1] + sb[3]) / 2
-    hw, hh = (sb[2] - sb[0]) * 0.2, (sb[3] - sb[1]) * 0.2
-    centered = [
-        max(0.0, cx - hw), max(0.0, cy - hh),
-        min(1.0, cx + hw), min(1.0, cy + hh),
-    ]
-    for box in (item["detail_box"], centered):
-        win, d_frac = make_detail_window(image, box, mw)
-        if not window_is_flat(image, win):
-            return win, d_frac
-    return None, None
-
-
-def build_single(canvas, images, plan, keep=None):
-    size = canvas.width
-    item = plan["images"][0]
-    img = images[item["index"]]
-    W, H = img.size
-
-    # 1) الخلفية: مربع كامل متمركز على العنصر
-    main_win = smart_window(
-        img, choose_anchor(img, item, 1.0), 1.0, "cover"
-    )
-    mx0, my0, mx1, _ = main_win
-    mw = mx1 - mx0
-    canvas.paste(
-        polish(crop_window(img, main_win, (size, size))), (0, 0)
-    )
-
-    if keep is not None:
-        for b in item.get("avoid_boxes", []):
-            keep.append((
-                (
-                    (b[0] * W - mx0) / mw * size,
-                    (b[1] * H - my0) / mw * size,
-                    (b[2] * W - mx0) / mw * size,
-                    (b[3] * H - my0) / mw * size,
-                ),
-                6.0,
-            ))
-
-    # 2) نافذة التفصيل
-    dwin, d_frac = pick_detail(img, item, mw)
-    if dwin is None:
-        print("تحذير: لم تُوجد منطقة تفصيل مفيدة؛ صورة بلا دائرة.")
-        return
-
-    dcx, dcy = (dwin[0] + dwin[2]) / 2, (dwin[1] + dwin[3]) / 2
-    dw = dwin[2] - dwin[0]
-    d = int(size * d_frac)
-    detail = polish(crop_window(img, dwin, (d, d)))
-    print(f"نسبة التكبير الفعلية: {d / (dw / mw * size):.2f}x")
-
-    # 3) موضع الحلقة على الخلفية
-    ring_cx = (dcx - mx0) / mw * size
-    ring_cy = (dcy - my0) / mw * size
-    ring_r = dw / mw * size / 2
-
-    # 4) اختيار الزاوية: أقل تغطية للعنصر وأهدأ منطقة وأبعد عن الحلقة
-    l, t, r, b = item["subject_box"]
-    sl, sr = (l * W - mx0) / mw * size, (r * W - mx0) / mw * size
-    st, sb = (t * H - my0) / mw * size, (b * H - my0) / mw * size
-    scx, scy = (sl + sr) / 2, (st + sb) / 2
-
-    def to_canvas(box):
-        return (
-            (box[0] * W - mx0) / mw * size,
-            (box[1] * H - my0) / mw * size,
-            (box[2] * W - mx0) / mw * size,
-            (box[3] * H - my0) / mw * size,
-        )
-
-    avoid_canvas = [to_canvas(b) for b in item.get("avoid_boxes", [])]
-
-    grid = 256
-    edges = canvas.convert("L").resize((grid, grid)).filter(
-        ImageFilter.FIND_EDGES
-    )
-    k = grid / size
-
-    def edge_density(px, py):
-        box = (
-            max(0, int(px * k)), max(0, int(py * k)),
-            min(grid, int((px + d) * k) + 1),
-            min(grid, int((py + d) * k) + 1),
-        )
-        if box[2] <= box[0] or box[3] <= box[1]:
-            return 1.0
-        return min(1.0, ImageStat.Stat(edges.crop(box)).mean[0] / 40.0)
-
-    def overlap_frac(px, py, ax0, ay0, ax1, ay1):
-        ow = max(0, min(px + d, ax1) - max(px, ax0))
-        oh = max(0, min(py + d, ay1) - max(py, ay0))
-        return ow * oh / (d * d)
-
-    m = int(size * 0.035)
-    corners = [
-        (size - d - m, m),
-        (m, m),
-        (size - d - m, size - d - m),
-        (m, size - d - m),
-    ]
-
-    def penalty(pos):
-        px, py = pos
-        dist = ((px + d / 2 - scx) ** 2 + (py + d / 2 - scy) ** 2) ** 0.5
-        return (
-            3.0 * overlap_frac(px, py, sl, st, sr, sb)
-            + 2.5 * sum(
-                overlap_frac(px, py, *box) for box in avoid_canvas
-            )
-            + 4.0 * overlap_frac(
-                px, py,
-                ring_cx - ring_r, ring_cy - ring_r,
-                ring_cx + ring_r, ring_cy + ring_r,
-            )
-            + 1.0 * edge_density(px, py)
-            + (0.6 if py > size / 2 else 0.0)
-            - 0.2 * dist / size
-        )
-
-    x, y = min(corners, key=penalty)
-
-    # 5) حلقة على مصدر التكبير + خط يصلها بالدائرة
-    ring_r = max(ring_r, 40 * SS)
-    ins_cx, ins_cy = x + d / 2, y + d / 2
-
-    if plan["show_ring"] and 0 <= ring_cx <= size and 0 <= ring_cy <= size:
-        draw = ImageDraw.Draw(canvas)
-        vx, vy = ins_cx - ring_cx, ins_cy - ring_cy
-        dist = (vx ** 2 + vy ** 2) ** 0.5
-        if dist > ring_r + d / 2 + 20 * SS:
-            ux, uy = vx / dist, vy / dist
-            draw.line(
-                (
-                    ring_cx + ux * ring_r, ring_cy + uy * ring_r,
-                    ins_cx - ux * d / 2, ins_cy - uy * d / 2,
-                ),
-                fill="white", width=4 * SS,
-            )
-        draw.ellipse(
-            (ring_cx - ring_r, ring_cy - ring_r,
-             ring_cx + ring_r, ring_cy + ring_r),
-            outline="white", width=5 * SS,
-        )
-
-    paste_inset(canvas, detail, x, y, plan["inset_shape"], 8 * SS)
-
-    if keep is not None:
-        keep.append(((x, y, x + d, y + d), 5.0))
-        keep.append((
-            (ring_cx - ring_r, ring_cy - ring_r,
-             ring_cx + ring_r, ring_cy + ring_r),
-            2.0,
-        ))
-
-
-def build_asis(canvas, images, plan):
-    """صورة مركّبة أو لقطة شاشة: تُعرض كاملة دون قص ولا دمج."""
-    size = canvas.width
-    item = plan["images"][0]
-    img = images[item["index"]]
-    W, H = img.size
-
-    if 0.8 <= W / H <= 1.25:
-        paste_tile(canvas, img, item, (0, 0, size, size))
-        return
-
-    small = size // 4
-    bg = ImageOps.fit(img, (small, small), Image.Resampling.LANCZOS)
-    bg = bg.filter(ImageFilter.GaussianBlur(8 * SS))
-    bg = bg.resize((size, size), Image.Resampling.BICUBIC)
-    bg = ImageEnhance.Brightness(bg).enhance(0.5)
-    canvas.paste(bg, (0, 0))
-
-    scale = min(size / W, size / H)
-    fg = img.resize(
-        (max(1, round(W * scale)), max(1, round(H * scale))),
-        Image.Resampling.LANCZOS,
-    )
-    canvas.paste(fg, ((size - fg.width) // 2, (size - fg.height) // 2))
-
-
-def window_coverage(image, item, w, h):
-    """نسبة ما تحفظه نافذة القص من العنصر الرئيسي (1.0 = كامل)."""
-    W, H = image.size
-    aspect = w / h
-    anchor = choose_anchor(image, item, aspect)
-    win = smart_window(image, anchor, aspect, "cover")
-
-    sl, st, sr, sb = (
-        item["subject_box"][0] * W, item["subject_box"][1] * H,
-        item["subject_box"][2] * W, item["subject_box"][3] * H,
-    )
-    area = (sr - sl) * (sb - st)
-    if area <= 0:
-        return 1.0
-    iw = max(0.0, min(sr, win[2]) - max(sl, win[0]))
-    ih = max(0.0, min(sb, win[3]) - max(st, win[1]))
-    return iw * ih / area
-
-
-def two_panel_boxes(size):
-    g = GUTTER * SS
-    half = (size - g) // 2
-    side = [(0, 0, half, size), (half + g, 0, size, size)]
-    stacked = [(0, 0, size, half), (0, half + g, size, size)]
-    return side, stacked
-
-
-def panel_score(images, plan, boxes):
-    return sum(
-        window_coverage(
-            images[item["index"]], item,
-            box[2] - box[0], box[3] - box[1],
-        )
-        for item, box in zip(plan["images"], boxes)
-    )
-
-
-def build_panels(canvas, images, plan, keep=None):
-    size = canvas.width
-    g = GUTTER * SS
-    layout = plan["layout"]
-
-    if layout == "two_panel":
-        side_boxes, stack_boxes = two_panel_boxes(size)
-
-        wanted_stacked = plan["orientation"] == "stacked"
-        chosen = stack_boxes if wanted_stacked else side_boxes
-        other = side_boxes if wanted_stacked else stack_boxes
-
-        # نغيّر اتجاه النموذج فقط إذا كان الآخر يحفظ العنصر أفضل بوضوح.
-        if (
-            panel_score(images, plan, other)
-            > panel_score(images, plan, chosen) + 0.05
-        ):
-            chosen = other
-            print("تم تغيير اتجاه اللوحتين لأنه يحفظ العنصر الرئيسي أفضل.")
-        boxes = chosen
-
-    elif layout == "three_panel":
-        s = (size - g) // 2
-        boxes = [
-            (0, 0, s, size),                       # مستطيل طولي
-            (s + g, 0, size, s),                   # مربع علوي
-            (s + g, s + g, size, size),            # مربع سفلي
-        ]
-        if plan["main_side"] == "right":
-            boxes = [(size - x1, y0, size - x0, y1)
-                     for x0, y0, x1, y1 in boxes]
-
-    else:  # four_grid
-        half = (size - g) // 2
-        boxes = [
-            (0, 0, half, half),
-            (half + g, 0, size, half),
-            (0, half + g, half, size),
-            (half + g, half + g, size, size),
-        ]
-
-    for item, box in zip(plan["images"], boxes):
-        paste_tile(canvas, images[item["index"]], item, box, keep)
-
-
-def find_font_path():
-    candidates = [os.getenv("FONT_PATH", "").strip()]
-    here = Path(__file__).resolve().parent
-    candidates += [
-        here / "fonts" / FONT_FILENAME,
-        Path("fonts") / FONT_FILENAME,
-        *FONT_FALLBACKS,
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return str(candidate)
-    return None
-
-
-def clean_headline(text):
-    """يزيل الرموز التعبيرية والهاشتاغات وعلامات الاقتباس الزائدة."""
-    text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]", "", text or "")
-    text = text.replace("#", " ").replace("«", "").replace("»", "")
-    text = text.replace('"', "").replace("“", "").replace("”", "")
-    text = "".join(
-        ch for ch in text
-        if not unicodedata.category(ch).startswith("C") or ch == " "
-    )
-    return clean_text(text)
-
-
-def shape_word(word):
-    return get_display(arabic_reshaper.reshape(word), base_dir="R")
-
-
-def layout_headline(words, font_path, width):
-    """يفضّل سطرين بخط كبير، وإن لم يتسع فثلاثة أسطر بخط أصغر."""
-    max_w = width * 0.88
-    shaped = [shape_word(w) for w in words]
-    result = None
-
-    for max_lines, min_frac in ((2, 0.052), (3, 0.044), (4, 0.038)):
-        for size in range(int(width * 0.078), int(width * min_frac) - 1, -2):
-            font = ImageFont.truetype(
-                font_path, size, layout_engine=ImageFont.Layout.BASIC
-            )
-            space = font.getlength(" ") + size * 0.10
-            widths = [font.getlength(s) for s in shaped]
-
-            lines, line_widths = [], []
-            cur, cur_w = [], 0.0
-            for i, wd in enumerate(widths):
-                add = wd if not cur else space + wd
-                if cur and cur_w + add > max_w:
-                    lines.append(cur)
-                    line_widths.append(cur_w)
-                    cur, cur_w = [i], wd
-                else:
-                    cur.append(i)
-                    cur_w += add
-            if cur:
-                lines.append(cur)
-                line_widths.append(cur_w)
-
-            result = {
-                "font": font, "size": size, "space": space,
-                "shaped": shaped, "widths": widths,
-                "lines": lines, "line_widths": line_widths,
-            }
-            if len(lines) <= max_lines and max(line_widths) <= max_w:
-                return result
-
-    return result
-
-
-def zone_penalty(zone, keep):
-    zx0, zy0, zx1, zy1 = zone
-    total = 0.0
-    for (bx0, by0, bx1, by1), weight in keep:
-        area = max(1.0, (bx1 - bx0) * (by1 - by0))
-        ow = max(0.0, min(zx1, bx1) - max(zx0, bx0))
-        oh = max(0.0, min(zy1, by1) - max(zy0, by0))
-        total += weight * ow * oh / area
-    return total
-
-
-def add_headline(canvas, headline, highlight, keep):
-    """يكتب عبارة عربية على الصورة في الأعلى أو الأسفل حسب الأقل تغطية."""
-    if not ARABIC_TEXT_OK:
-        print("::warning title=النص العربي::مكتبتا arabic-reshaper و "
-              "python-bidi غير مثبتتين؛ تُخطي الكتابة على الصورة.")
-        return None
-
-    font_path = find_font_path()
-    if not font_path:
-        print("::warning title=النص العربي::لم يُعثر على خط عربي؛ "
-              "تُخطي الكتابة على الصورة.")
-        return None
-
-    words = clean_headline(headline).split()[:24]
-    if not words:
-        return None
-
-    W, H = canvas.size
-    lay = layout_headline(words, font_path, W)
-    if lay is None:
-        return None
-
-    size = lay["size"]
-    line_h = int(size * 1.28)
-    pad = int(size * 0.55)
-    n_lines = len(lay["lines"])
-    block_h = line_h * n_lines + pad * 2
-
-    zones = {
-        "bottom": (0, H - block_h, W, H),
-        "top": (0, 0, W, block_h),
-    }
-    zone_name = min(
-        ("bottom", "top"), key=lambda z: zone_penalty(zones[z], keep)
-    )
-    zx0, zy0, zx1, zy1 = zones[zone_name]
-
-    # تدرج داكن خلف النص لضمان الوضوح فوق أي صورة
-    gh = int(block_h * 1.5)
-    alpha = Image.linear_gradient("L").resize((W, gh))
-    alpha = alpha.point(lambda v: int(v * 0.88))
-    if zone_name == "bottom":
-        canvas.paste((0, 0, 0), (0, H - gh, W, H), alpha)
-    else:
-        canvas.paste((0, 0, 0), (0, 0, W, gh), ImageOps.flip(alpha))
-
-    draw = ImageDraw.Draw(canvas)
-
-    # شريط لوني قصير على الحافة الداخلية للنص
-    bar_w, bar_h = int(W * 0.14), max(6, int(size * 0.12))
-    bar_y = (
-        zy0 + pad - int(size * 0.30) - bar_h
-        if zone_name == "bottom"
-        else zy1 - pad + int(size * 0.30)
-    )
-    draw.rounded_rectangle(
-        ((W - bar_w) // 2, bar_y, (W + bar_w) // 2, bar_y + bar_h),
-        radius=bar_h // 2, fill=TEXT_ACCENT,
-    )
-
-    def norm(word):
-        return re.sub(r"[^\w]", "", word, flags=re.UNICODE)
-
-    marked = {norm(w) for w in clean_headline(highlight).split()} - {""}
-    stroke = max(3, size // 16)
-    y = zy0 + pad
-
-    for line, line_w in zip(lay["lines"], lay["line_widths"]):
-        x = (W + line_w) / 2           # الكتابة من اليمين إلى اليسار
-        for idx in line:
-            x -= lay["widths"][idx]
-            color = TEXT_ACCENT if norm(words[idx]) in marked else "white"
-            draw.text(
-                (x, y), lay["shaped"][idx], font=lay["font"], fill=color,
-                stroke_width=stroke, stroke_fill="black",
-            )
-            x -= lay["space"]
-        y += line_h
-
-    return {
-        "text": " ".join(words),
-        "zone": zone_name,
-        "font": Path(font_path).name,
-        "font_size": size,
-        "lines": n_lines,
-    }
-
-
-def facebook_height() -> int:
-    """ارتفاع صورة فيسبوك: 4:5 افتراضيًا (1080×1350)، أو 3:4 (1080×1440)."""
-    ratio = os.getenv("FB_IMAGE_RATIO", "").strip().replace(".", ":").replace("/", ":")
-    if ratio == "3:4":
-        return round(IMAGE_SIZE * 4 / 3)
-    return round(IMAGE_SIZE * 5 / 4)
-
-
-def layout_for_band(words, font_path, width, band_h):
-    """أكبر خط يتسع فيه العنوان داخل شريط ارتفاعه band_h (حتى 4 أسطر)."""
-    max_w = width * 0.90
-    shaped = [shape_word(w) for w in words]
-    result = None
-
-    for size in range(int(width * 0.080), int(width * 0.036) - 1, -2):
-        font = ImageFont.truetype(
-            font_path, size, layout_engine=ImageFont.Layout.BASIC
-        )
-        space = font.getlength(" ") + size * 0.10
-        widths = [font.getlength(s) for s in shaped]
-
-        lines, line_widths, cur, cur_w = [], [], [], 0.0
-        for i, wd in enumerate(widths):
-            add = wd if not cur else space + wd
-            if cur and cur_w + add > max_w:
-                lines.append(cur)
-                line_widths.append(cur_w)
-                cur, cur_w = [i], wd
-            else:
-                cur.append(i)
-                cur_w += add
-        if cur:
-            lines.append(cur)
-            line_widths.append(cur_w)
-
-        line_h = int(size * 1.28)
-        bar_h = max(6, int(size * 0.10))
-        gap = int(size * 0.35)
-        content_h = bar_h + gap + line_h * len(lines)
-
-        result = {
-            "font": font, "size": size, "space": space, "shaped": shaped,
-            "widths": widths, "lines": lines, "line_widths": line_widths,
-            "line_h": line_h, "bar_h": bar_h, "gap": gap,
-            "content_h": content_h,
-        }
-        if (
-            len(lines) <= 4
-            and max(line_widths) <= max_w
-            and content_h <= band_h * 0.92
-        ):
-            return result
-    return result
-
-
-def add_title_band(picture, headline, highlight):
-    """
-    يمدّ الصورة إلى مقاس منشور فيسبوك (4:5 أو 3:4): الصورة في الأعلى كما هي،
-    وأسفلها شريط داكن فارغ يُكتب فيه العنوان، فلا يغطي النص أي جزء منها.
-    يعيد (الصورة النهائية، معلومات النص أو None).
-    """
-    W, S = picture.size
-    H = facebook_height()
-    band_h = H - S
-
-    # لون الشريط: لون أسفل الصورة معتّمًا، بتدرج خفيف
-    r, g, b = picture.crop((0, int(S * 0.92), W, S)).resize(
-        (1, 1), Image.Resampling.LANCZOS
-    ).getpixel((0, 0))
-    top_c = tuple(max(14, int(c * 0.30)) for c in (r, g, b))
-    bot_c = tuple(max(8, int(c * 0.14)) for c in (r, g, b))
-    grad = Image.linear_gradient("L").resize((W, band_h))
-    band = Image.composite(
-        Image.new("RGB", (W, band_h), bot_c),
-        Image.new("RGB", (W, band_h), top_c),
-        grad,
-    )
-
-    canvas = Image.new("RGB", (W, H))
-    canvas.paste(picture, (0, 0))
-    canvas.paste(band, (0, S))
-
-    if not headline:
-        return canvas, None
-    if not ARABIC_TEXT_OK:
-        print("::warning title=النص العربي::مكتبتا arabic-reshaper و "
-              "python-bidi غير مثبتتين؛ يبقى الشريط فارغًا.")
-        return canvas, None
-    font_path = find_font_path()
-    if not font_path:
-        print("::warning title=النص العربي::لم يُعثر على خط عربي.")
-        return canvas, None
-
-    words = clean_headline(headline).split()[:24]
-    if not words:
-        return canvas, None
-    lay = layout_for_band(words, font_path, W, band_h)
-    if lay is None:
-        return canvas, None
-
-    draw = ImageDraw.Draw(canvas)
-    top = S + (band_h - lay["content_h"]) // 2
-
-    bar_w = int(W * 0.12)
-    draw.rounded_rectangle(
-        ((W - bar_w) // 2, top, (W + bar_w) // 2, top + lay["bar_h"]),
-        radius=lay["bar_h"] // 2, fill=TEXT_ACCENT,
-    )
-
-    def norm(word):
-        return re.sub(r"[^\w]", "", word, flags=re.UNICODE)
-
-    marked = {norm(w) for w in clean_headline(highlight).split()} - {""}
-    y = top + lay["bar_h"] + lay["gap"]
-    for line, line_w in zip(lay["lines"], lay["line_widths"]):
-        x = (W + line_w) / 2           # الكتابة من اليمين إلى اليسار
-        for idx in line:
-            x -= lay["widths"][idx]
-            color = TEXT_ACCENT if norm(words[idx]) in marked else "white"
-            draw.text((x, y), lay["shaped"][idx], font=lay["font"],
-                      fill=color)
-            x -= lay["space"]
-        y += lay["line_h"]
-
-    return canvas, {
-        "text": " ".join(words), "zone": "band",
-        "font": Path(font_path).name, "font_size": lay["size"],
-        "lines": len(lay["lines"]), "size": [W, H],
-    }
-
-
-def create_design(
-    images, plan, destination: Path, headline=None, highlight=None
-):
-    if not images:
-        raise ProjectError("لا توجد صور صالحة للتصميم.")
-
-    source_plan = plan
-    plan = dict(plan)
-    plan["images"] = [
-        i for i in plan.get("images", [])
-        if 0 <= i.get("index", -1) < len(images)
-    ]
-    if not plan["images"]:
-        raise ProjectError("خطة التصميم لا تشير إلى صور متاحة.")
-
-    size = IMAGE_SIZE * SS
-
-    # لوحتان تفقدان جزءًا كبيرًا من العنصر المهم: صورة واحدة مع تكبير أفضل.
-    if plan["layout"] == "two_panel" and len(plan["images"]) == 2:
-        side_boxes, stack_boxes = two_panel_boxes(size)
-        best = max(
-            panel_score(images, plan, side_boxes),
-            panel_score(images, plan, stack_boxes),
-        )
-        if best < 1.5:
-            print(
-                f"تحذير: اللوحتان تحفظان {best:.2f} من 2.0 فقط؛ "
-                "التحول إلى صورة واحدة مع تفصيل مكبر."
-            )
-            plan["layout"] = "single_inset"
-            plan["images"] = plan["images"][:1]
-            source_plan["layout_applied"] = "single_inset"
-
-    canvas = Image.new("RGB", (size, size), GUTTER_COLOR)
-
-    keep = []
-    if plan["layout"] == "as_is":
-        build_asis(canvas, images, plan)
-    elif plan["layout"] == "single_inset" or len(plan["images"]) == 1:
-        build_single(canvas, images, plan, keep)
-    else:
-        build_panels(canvas, images, plan, keep)
-
-    canvas = canvas.resize(
-        (IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.LANCZOS
-    )
-
-    text_enabled = os.getenv("ADD_IMAGE_TEXT", "").strip().lower() not in {
-        "0", "false", "no", "off",
-    }
-    canvas, info = add_title_band(
-        canvas,
-        headline if (headline and text_enabled) else None,
-        highlight or "",
-    )
-    if info:
-        source_plan["headline"] = info
-        print(f"النص على الصورة: {info['text']} (شريط سفلي)")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(destination, "JPEG", quality=93, optimize=True)
-    return destination
-
-
-# ---------------------------------------------------------------------------
-# الملفات والتشغيل
+# تحليل الصور والصور العريضة
+# (تصميم صورة فيسبوك نفسه في fb_cover.py)
 # ---------------------------------------------------------------------------
 
 def analyze_with_providers(images, title, text):
@@ -1299,6 +472,10 @@ def build_wide_images(images, plan, rewritten, out_dir):
     return info
 
 
+# ---------------------------------------------------------------------------
+# الملفات والتشغيل
+# ---------------------------------------------------------------------------
+
 def write_text_file(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
@@ -1391,10 +568,8 @@ def main():
             plan, design_images, provider_errors = analyze_with_providers(
                 images, article["title"], article["text"]
             )
-            wide_plan = {
-                k: v for k, v in plan.items()
-                if k not in ("layout_applied", "headline")
-            }
+            # نسخة للصورتين العريضتين قبل أن يضيف التصميم بياناته إلى الخطة
+            wide_plan = dict(plan)
             wide_images = design_images
             create_design(
                 design_images, plan, out_dir / "facebook_image.jpg",
@@ -1505,7 +680,7 @@ def main():
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # نحافظ على بيانات النشر السابق على Blogger حتى يُحدَّث المقال لا يتكرر
+    # نحافظ على بيانات النشر السابق (Make/Blogger) حتى يُحدَّث المقال لا يتكرر
     previous_path = out_dir / "result.json"
     if previous_path.is_file():
         try:
