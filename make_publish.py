@@ -296,11 +296,17 @@ def publish(out_dir: Path) -> dict[str, Any]:
     reply = post_to_make(payload)
     post_url = (reply.get("url") or "").strip() or None
 
+    # related.py يشترط status == "LIVE" حرفيًا لربط المقالات ببعضها؛ نوحّد الصياغة
+    raw_status = str(reply.get("status") or "").strip().upper()
+    if raw_status == "PUBLISHED":
+        raw_status = "LIVE"
+    status = raw_status or ("DRAFT" if draft else "LIVE")
+
     record = {
         "via": "make",
         "post_id": reply.get("post_id") or previous.get("post_id") or None,
         "url": post_url,
-        "status": reply.get("status") or ("DRAFT" if draft else "LIVE"),
+        "status": status,
         "labels": labels,
         "action": "update" if previous.get("post_id") else "insert",
         "images": urls,
@@ -320,7 +326,7 @@ def publish(out_dir: Path) -> dict[str, Any]:
         )
 
     fill_first_comment(out_dir, result, post_url)
-    if str(record["status"]).upper() == "DRAFT":
+    if status == "DRAFT":
         print("::warning title=مقال بحالة مسودة::رابط التعليق الأول لن يفتحه "
               "الزوار حتى يُنشر المقال.")
     print(f"تم النشر عبر Make: {post_url} ({record['status']})")
