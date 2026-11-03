@@ -4,7 +4,9 @@
 - الصورة المصغرة تُوضع أول صورة في المقال، وصورة المنتصف في موضعها داخل النص.
 - الصور تُستضاف في مستودع GitHub العام وتُدرج برابط jsDelivr ثابت لكل commit.
 - الروابط الداخلية (اقرأ أيضًا) تُحوَّل من Markdown إلى روابط HTML.
-- رابط المقال الذي يردّ به Make يُوضع مكان {LINK} في first_comment.txt.
+- Make يردّ بـ post_id فقط (وحدة Blogger لا تُرجع الرابط)؛ ويُجلب رابط المقال من
+  خلاصة المدونة العامة (BLOGGER_BLOG_ID) ويُوضع مكان {LINK} في first_comment.txt.
+  وإن ردّ Make برابط (url) يُستعمل مباشرة دون بحث.
 - إن كان للمقال post_id محفوظ يُرسل إلى Make للتحديث بدل إنشاء مقال مكرر.
 - إن لم يُحدَّد BLOGGER_LABEL يُستعمل تصنيف الذكاء الاصطناعي من result.json.
 
@@ -194,6 +196,37 @@ def split_labels(requested: str) -> list[str]:
 # الإرسال إلى Make
 # ---------------------------------------------------------------------------
 
+FEED_URL = "https://www.blogger.com/feeds/{blog}/posts/default/{post}?alt=json"
+
+
+def lookup_post_url(blog_id: str, post_id: str, attempts: int = 6,
+                    wait: float = 5.0) -> str | None:
+    """
+    رابط المقال المنشور من خلاصة Blogger العامة (بلا مصادقة). وحدة Blogger في Make
+    تُرجع post_id فقط، فنسأل الخلاصة عن الرابط. تعيد المحاولة قليلًا لأن المقال
+    قد يتأخر ظهوره في الخلاصة ثواني بعد النشر. المسودات ليست علنية فلا رابط لها.
+    """
+    if not blog_id or not post_id:
+        return None
+    url = FEED_URL.format(blog=blog_id, post=post_id)
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                entry = response.json().get("entry") or {}
+                for link in entry.get("link") or []:
+                    href = str(link.get("href") or "")
+                    if link.get("rel") == "alternate" and href:
+                        return re.sub(
+                            r"^http://([^/]*\.blogspot\.[a-z.]+)/",
+                            r"https://\1/", href)
+        except (requests.RequestException, ValueError, AttributeError):
+            pass
+        if attempt < attempts - 1:
+            time.sleep(wait)
+    return None
+
+
 def post_to_make(payload: dict[str, Any]) -> dict[str, Any]:
     url = os.getenv("MAKE_WEBHOOK_URL", "").strip()
     if not url:
@@ -295,7 +328,8 @@ def publish(out_dir: Path) -> dict[str, Any]:
     }
 
     reply = post_to_make(payload)
-    post_url = (reply.get("url") or "").strip() or None
+    post_id = str(reply.get("post_id") or previous.get("post_id") or "").strip()
+    post_url = str(reply.get("url") or "").strip() or None
 
     # related.py يشترط status == "LIVE" حرفيًا لربط المقالات ببعضها؛ نوحّد الصياغة
     raw_status = str(reply.get("status") or "").strip().upper()
@@ -305,7 +339,7 @@ def publish(out_dir: Path) -> dict[str, Any]:
 
     record = {
         "via": "make",
-        "post_id": reply.get("post_id") or previous.get("post_id") or None,
+        "post_id": post_id or None,
         "url": post_url,
         "status": status,
         "labels": labels,
@@ -315,15 +349,33 @@ def publish(out_dir: Path) -> dict[str, Any]:
         "published_at_utc": datetime.now(timezone.utc).isoformat(),
     }
 
+    # المسودة ليست علنية فلا رابط لها في الخلاصة العامة
+    if not post_url and post_id and status != "DRAFT":
+        post_url = lookup_post_url(os.getenv("BLOGGER_BLOG_ID", "").strip(),
+                                   post_id)
+        record["url"] = post_url
+
     # نحفظ السجل أولًا (حتى لا يتكرر النشر لاحقًا) ثم نفحص الرابط
     result["blogger"] = record
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2)
                            + "\n", encoding="utf-8")
 
-    if not post_url:
+    if not post_id and not post_url:
         raise MakeError(
-            "نشر Make المقال لكنه لم يُرجع رابطه، فلن يُعبَّأ التعليق الأول. "
-            "تأكد أن وحدة Webhook response ترد بحقل url."
+            "ردّ Make بلا post_id ولا url. تأكد أن وحدة Webhook response "
+            "ترد بحقل post_id (من وحدة Create a post)."
+        )
+
+    if not post_url:
+        if status == "DRAFT":
+            print("::warning title=مقال بحالة مسودة::لا رابط عامًا للمسودة، "
+                  "فيبقى {LINK} في first_comment.txt حتى يُنشر المقال.")
+            print(f"أُرسل المقال مسودةً عبر Make (post_id={post_id}).")
+            return record
+        raise MakeError(
+            "نُشر المقال لكن تعذّر جلب رابطه من خلاصة المدونة. تأكد من ضبط "
+            "BLOGGER_BLOG_ID (رقم المدونة) وأن المدونة عامة؛ ولن يُعبَّأ "
+            "التعليق الأول قبل ذلك."
         )
 
     fill_first_comment(out_dir, result, post_url)
