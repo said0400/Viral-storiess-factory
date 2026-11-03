@@ -57,6 +57,7 @@ SECRETS = {              # الاسم: (حرج؟، الغرض)
     "CF_ACCOUNT_ID": (False, "الصورة المصغرة بالذكاء الاصطناعي"),
     "CF_API_TOKEN": (False, "الصورة المصغرة بالذكاء الاصطناعي"),
     "MAKE_WEBHOOK_URL": (False, "النشر على Blogger عبر Make"),
+    "BLOGGER_BLOG_ID": (False, "جلب رابط المقال بعد النشر (رقم المدونة)"),
     "GREENAPI_ID_INSTANCE": (False, "واتساب"),
     "GREENAPI_API_TOKEN": (False, "واتساب"),
     "GREENAPI_CHAT_ID": (False, "واتساب"),
