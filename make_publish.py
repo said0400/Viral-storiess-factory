@@ -286,6 +286,7 @@ def publish(out_dir: Path) -> dict[str, Any]:
         "labels_csv": ", ".join(labels),
         "draft": draft,
         "status": "DRAFT" if draft else "LIVE",
+        "action": "update" if previous.get("post_id") else "insert",
         "post_id": previous.get("post_id") or "",   # للتحديث عبر Router
         "source_url": result.get("source_url"),
         "thumbnail_url": urls.get("thumbnail.jpg", ""),
