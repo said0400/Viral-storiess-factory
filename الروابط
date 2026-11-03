@@ -20,3 +20,4 @@ GROQ_API_KEY
 GREENAPI_API_URL    
 GREENAPI_MEDIA_URL
 THUMBNAIL_MODE   ai_full
+ {"post_id": "[Post ID]"}
