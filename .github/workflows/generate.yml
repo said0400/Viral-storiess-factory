@@ -199,6 +199,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
           MAKE_WEBHOOK_SECRET: ${{ secrets.MAKE_WEBHOOK_SECRET }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID || vars.BLOGGER_BLOG_ID }}
           GREENAPI_ID_INSTANCE: ${{ secrets.GREENAPI_ID_INSTANCE }}
           GREENAPI_API_TOKEN: ${{ secrets.GREENAPI_API_TOKEN }}
           GREENAPI_CHAT_ID: ${{ secrets.GREENAPI_CHAT_ID }}
@@ -328,6 +329,7 @@ jobs:
           BLOGGER_DRAFT: ${{ vars.BLOGGER_DRAFT }}
           MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
           MAKE_WEBHOOK_SECRET: ${{ secrets.MAKE_WEBHOOK_SECRET }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID || vars.BLOGGER_BLOG_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
