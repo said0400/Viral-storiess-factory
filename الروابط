@@ -23,3 +23,9 @@ THUMBNAIL_MODE   ai_full
  {"post_id": "[Post ID]"}
 
 BLOGGER_API_KEY
+
+افتح Google Cloud Console واختر مشروعك (أو أنشئ واحدًا).
+من APIs & Services ← Library ابحث عن Blogger API v3 وفعّله.
+من Credentials ← Create credentials ← API key، وانسخ المفتاح.
+يُفضّل تقييده: Restrict key ← API restrictions ← Blogger API v3.
+أضفه في GitHub سرًّا باسم BLOGGER_API_KEY.
