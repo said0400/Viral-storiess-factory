@@ -22,4 +22,4 @@ GREENAPI_MEDIA_URL
 THUMBNAIL_MODE   ai_full
  {"post_id": "[Post ID]"}
 
-وحدة Make لا تُرجع إلا post_id، لكن Blogger API v3 الرسمي يردّ بالرابط مباشرة إذا أعطيته رقم المدونة ورقم المقال، ولا يحتاج مصادقة OAuth للمدونات العامة، بل مفتاح API فقط. هذا أوثق من خلاصة GData القديمة التي كنت أعتمد عليها.
+BLOGGER_API_KEY
