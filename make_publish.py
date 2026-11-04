@@ -4,9 +4,9 @@
 - الصورة المصغرة تُوضع أول صورة في المقال، وصورة المنتصف في موضعها داخل النص.
 - الصور تُستضاف في مستودع GitHub العام وتُدرج برابط jsDelivr ثابت لكل commit.
 - الروابط الداخلية (اقرأ أيضًا) تُحوَّل من Markdown إلى روابط HTML.
-- Make يردّ بـ post_id فقط (وحدة Blogger لا تُرجع الرابط)؛ ويُجلب رابط المقال من
-  خلاصة المدونة العامة (BLOGGER_BLOG_ID) ويُوضع مكان {LINK} في first_comment.txt.
-  وإن ردّ Make برابط (url) يُستعمل مباشرة دون بحث.
+- Make يردّ بـ post_id فقط (وحدة Blogger لا تُرجع الرابط)؛ فيُجلب الرابط من Blogger
+  العام (BLOGGER_BLOG_ID): بالـ API الرسمي إن وُجد BLOGGER_API_KEY، وإلا بالخلاصة
+  العامة، ويُوضع مكان {LINK} في first_comment.txt. وإن ردّ Make بـ url يُستعمل مباشرة.
 - إن كان للمقال post_id محفوظ يُرسل إلى Make للتحديث بدل إنشاء مقال مكرر.
 - إن لم يُحدَّد BLOGGER_LABEL يُستعمل تصنيف الذكاء الاصطناعي من result.json.
 
@@ -197,33 +197,79 @@ def split_labels(requested: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 FEED_URL = "https://www.blogger.com/feeds/{blog}/posts/default/{post}?alt=json"
+API_URL = "https://www.googleapis.com/blogger/v3/blogs/{blog}/posts/{post}"
+
+
+def _https(href: str) -> str:
+    """Blogger يعيد أحيانًا http لنطاقات blogspot؛ نرفعها إلى https."""
+    return re.sub(r"^http://([^/]*\.blogspot\.[a-z.]+)/", r"https://\1/", href)
+
+
+def _url_from_api(blog_id: str, post_id: str, key: str) -> tuple[str | None, str]:
+    """الطريقة الرسمية: Blogger API v3 بمفتاح API فقط (تكفي للمدونات العامة)."""
+    try:
+        r = requests.get(API_URL.format(blog=blog_id, post=post_id),
+                         params={"key": key, "fields": "url,status"},
+                         timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        return None, f"API: تعذر الاتصال ({exc})"
+    if r.status_code != 200:
+        return None, f"API: HTTP {r.status_code} {r.text[:120]!r}"
+    try:
+        url = str(r.json().get("url") or "").strip()
+    except (ValueError, AttributeError):
+        return None, "API: رد ليس JSON"
+    return (_https(url), "API: ok") if url else (None, "API: لا حقل url")
+
+
+def _url_from_feed(blog_id: str, post_id: str) -> tuple[str | None, str]:
+    """الخلاصة العامة القديمة (بلا مفتاح): entry.link بعنصر rel=alternate."""
+    try:
+        r = requests.get(FEED_URL.format(blog=blog_id, post=post_id),
+                         timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        return None, f"الخلاصة: تعذر الاتصال ({exc})"
+    if r.status_code != 200:
+        return None, f"الخلاصة: HTTP {r.status_code}"
+    try:
+        entry = r.json().get("entry") or {}
+        for link in entry.get("link") or []:
+            href = str(link.get("href") or "")
+            if link.get("rel") == "alternate" and href:
+                return _https(href), "الخلاصة: ok"
+    except (ValueError, AttributeError):
+        return None, "الخلاصة: رد ليس JSON"
+    return None, "الخلاصة: لا رابط alternate"
 
 
 def lookup_post_url(blog_id: str, post_id: str, attempts: int = 6,
                     wait: float = 5.0) -> str | None:
     """
-    رابط المقال المنشور من خلاصة Blogger العامة (بلا مصادقة). وحدة Blogger في Make
-    تُرجع post_id فقط، فنسأل الخلاصة عن الرابط. تعيد المحاولة قليلًا لأن المقال
-    قد يتأخر ظهوره في الخلاصة ثواني بعد النشر. المسودات ليست علنية فلا رابط لها.
+    رابط المقال المنشور. وحدة Blogger في Make تُرجع post_id فقط، فنسأل Blogger عنه:
+    1) API الرسمي إن وُجد BLOGGER_API_KEY، 2) ثم الخلاصة العامة (بلا مفتاح).
+    تُعاد المحاولة لأن المقال قد يتأخر ظهوره ثواني بعد النشر، وتُطبع أسباب الفشل
+    في السجل لتسهيل التشخيص. المسودات ليست علنية فلا رابط لها.
     """
     if not blog_id or not post_id:
+        print("::warning title=رابط المقال::BLOGGER_BLOG_ID غير مضبوط؛ "
+              "لا يمكن جلب الرابط.")
         return None
-    url = FEED_URL.format(blog=blog_id, post=post_id)
+    key = os.getenv("BLOGGER_API_KEY", "").strip()
+    notes: list[str] = []
     for attempt in range(attempts):
-        try:
-            response = requests.get(url, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                entry = response.json().get("entry") or {}
-                for link in entry.get("link") or []:
-                    href = str(link.get("href") or "")
-                    if link.get("rel") == "alternate" and href:
-                        return re.sub(
-                            r"^http://([^/]*\.blogspot\.[a-z.]+)/",
-                            r"https://\1/", href)
-        except (requests.RequestException, ValueError, AttributeError):
-            pass
+        notes = []
+        if key:
+            url, note = _url_from_api(blog_id, post_id, key)
+            notes.append(note)
+            if url:
+                return url
+        url, note = _url_from_feed(blog_id, post_id)
+        notes.append(note)
+        if url:
+            return url
         if attempt < attempts - 1:
             time.sleep(wait)
+    print("::warning title=رابط المقال::" + " | ".join(notes))
     return None
 
 
