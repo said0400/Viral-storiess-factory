@@ -330,6 +330,7 @@ jobs:
           MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
           MAKE_WEBHOOK_SECRET: ${{ secrets.MAKE_WEBHOOK_SECRET }}
           BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID || vars.BLOGGER_BLOG_ID }}
+          BLOGGER_API_KEY: ${{ secrets.BLOGGER_API_KEY }}
           PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
