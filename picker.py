@@ -7,8 +7,10 @@
    وترتيب أفضل المرشحين لقابلية الانتشار.
 4) يفضّل تصنيفًا لم يُنشر منه اليوم (بتوقيت المغرب) كي لا يتشابه مقالا اليوم؛
    تفضيل لا منع: إن لم توجد قصة جيدة بتصنيف جديد تُختار الأفضل أيًّا كان تصنيفها.
-5) يجرّب المرشحين بالترتيب بـ extract_article ويعتمد أول مقال ينجح استخراجه.
-6) يكتب article_url و category في GITHUB_OUTPUT.
+5) يمنع أن يستحوذ مصدر واحد على الترتيب (MAX_PER_SOURCE_TRIED مرشحين في المقدمة).
+6) يجرّب المرشحين بالترتيب بـ extract_article ويعتمد أول مقال ينجح استخراجه؛
+   وإن حجب موقع خوادمنا (HTTP 401/403/429/451) يتخطى بقية مرشحيه فورًا.
+7) يكتب article_url و category في GITHUB_OUTPUT.
 
 التشغيل: python picker.py
 """
@@ -46,10 +48,6 @@ FEEDS: dict[str, list[str]] = {
         "https://www.buzzfeed.com/index.xml",
         "https://www.buzzfeed.com/",
     ],
-    "UPI Odd News": [
-        "https://rss.upi.com/news/odd_news.rss",
-        "https://www.upi.com/Odd_News/",
-    ],
     "Oddee": [
         "https://www.oddee.com/feed/",
         "https://www.oddee.com/",
@@ -66,8 +64,11 @@ FEEDS: dict[str, list[str]] = {
 
 MAX_PER_FEED = 15
 MAX_FEED_BYTES = 3 * 1024 * 1024
-MAX_CANDIDATES_TRIED = 8
+MAX_CANDIDATES_TRIED = 15
+MAX_PER_SOURCE_TRIED = 3          # أقصى مرشحين من المصدر نفسه في مقدمة الترتيب
 MIN_TEXT_CHARS = 600
+# ردود تعني أن الموقع يحجب خوادمنا: لا فائدة من تجربة بقية مقالاته
+BLOCKING_STATUSES = {401, 403, 429, 451}
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +185,39 @@ def collect_items() -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# تنويع المصادر وتخطي المصادر المحجوبة
+# ---------------------------------------------------------------------------
+
+def limit_per_source(
+    ranking: list[dict[str, Any]], items: list[dict[str, str]],
+    cap: int = MAX_PER_SOURCE_TRIED,
+) -> list[dict[str, Any]]:
+    """
+    يبقي أول cap مرشحين من كل مصدر في أماكنهم، ويؤخّر الزائدين إلى آخر القائمة
+    (مع حفظ ترتيبهم). تفضيل لا حذف: يبقون احتياطًا إن فشل غيرهم.
+    """
+    counts: dict[str, int] = {}
+    front: list[dict[str, Any]] = []
+    back: list[dict[str, Any]] = []
+    for entry in ranking:
+        source = items[entry["id"]]["source"]
+        counts[source] = counts.get(source, 0) + 1
+        (front if counts[source] <= cap else back).append(entry)
+    if back:
+        print(f"تنويع المصادر: أُخّر {len(back)} مرشحين زائدين عن "
+              f"{cap} من المصدر نفسه.")
+    return front + back
+
+
+def blocked_status(exc: Exception) -> int | None:
+    """رمز HTTP الذي يدل على حجب الموقع لخوادمنا، أو None."""
+    match = re.search(r"HTTP (\d{3})", str(exc))
+    if match and int(match.group(1)) in BLOCKING_STATUSES:
+        return int(match.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # تصنيفات اليوم: تجنّب تكرار التصنيف نفسه بين مقالتي اليوم
 # ---------------------------------------------------------------------------
 
@@ -249,7 +283,8 @@ def prefer_new_categories(
 SYSTEM_PROMPT = f"""
 أنت محرر محتوى خبير في المنشورات الفيروسية للجمهور العربي.
 ستُعطى قائمة مقالات أجنبية (عنوان وملخص). اختر أفضلها لتتحول إلى مقال ومنشور
-فيروسي بالعربية، ورتّب أفضل 8 منها من الأقوى إلى الأضعف.
+فيروسي بالعربية، ورتّب أفضل {MAX_CANDIDATES_TRIED} منها من الأقوى إلى الأضعف.
+نوّع المصادر: لا تضع أكثر من {MAX_PER_SOURCE_TRIED} مرشحين من المصدر نفسه في المقدمة.
 
 معايير الاختيار:
 - دهشة أو عاطفة قوية تُفهم من العنوان وحده.
@@ -313,7 +348,7 @@ def _rank_items_once(
             continue
         try:
             text, model = writer._call(
-                provider, SYSTEM_PROMPT, user, temperature=0.2, max_tokens=6000
+                provider, SYSTEM_PROMPT, user, temperature=0.2, max_tokens=8000
             )
             ranking = _validate(grok._extract_json(text), len(items))
             if ranking:
@@ -381,14 +416,26 @@ def rank_items(
 # ---------------------------------------------------------------------------
 
 def choose(items: list[dict[str, str]], ranking: list[dict[str, Any]]):
-    """أول مرشح ينجح استخراج نصه ويحتوي صورة."""
+    """
+    أول مرشح ينجح استخراج نصه ويحتوي صورة. إن حجب موقعٌ خوادمنا (403 مثلًا)
+    تُتخطى بقية مقالاته دون تجربتها.
+    """
+    blocked: set[str] = set()
     for entry in ranking:
         item = items[entry["id"]]
+        if item["source"] in blocked:
+            print(f"تخطي (المصدر محجوب): {item['title']} ({item['source']})")
+            continue
         print(f"تجربة: {item['title']} ({item['source']})")
         try:
             article = pipeline.extract_article(item["link"])
         except pipeline.ProjectError as exc:
             print(f"  رُفض: {exc}")
+            status = blocked_status(exc)
+            if status:
+                blocked.add(item["source"])
+                print(f"::warning title=مصدر محجوب::{item['source']} "
+                      f"يرفض صفحاته (HTTP {status})؛ تُتخطى بقية مقالاته.")
             continue
         if len(article["text"]) < MIN_TEXT_CHARS:
             print("  رُفض: النص المستخرج قصير.")
@@ -436,7 +483,7 @@ def pick_story() -> tuple[dict[str, str], dict[str, Any]]:
         raise pipeline.ProjectError("لم يُجلب أي مقال جديد من المصادر.")
     avoid = categories_today()
     ranking, _ = rank_items(items, avoid)
-    ranking = prefer_new_categories(ranking, avoid)
+    ranking = prefer_new_categories(limit_per_source(ranking, items), avoid)
     item, entry, _ = choose(items, ranking)
     return item, entry
 
@@ -455,7 +502,7 @@ def main() -> int:
 
         print("2/3: التحليل بالذكاء الاصطناعي...")
         ranking, how = rank_items(items, avoid)
-        ranking = prefer_new_categories(ranking, avoid)
+        ranking = prefer_new_categories(limit_per_source(ranking, items), avoid)
 
         print("3/3: اعتماد أول مرشح صالح...")
         item, entry, _ = choose(items, ranking)
