@@ -36,6 +36,10 @@ EXPECTED: dict[str, list[str]] = {
     "picker": ["pick_story", "rank_items", "collect_items"],
     "run_factory": ["run"],
     "make_publish": ["publish", "fill_first_comment", "DEFAULT_LABEL"],
+    "story_categories": ["STORY_CATEGORIES", "next_category", "load_story_results"],
+    "story_writer": ["write_story", "load_history", "append_related"],
+    "story_image": ["build_story_images"],
+    "story_factory": ["main", "run"],
     "whatsapp_notify": ["main", "notify"],
 }
 
@@ -76,6 +80,12 @@ def main(root: Path | None = None) -> int:
         print(f"  {'OK     ' if ok else 'مفقود '} {name}.py")
         if not ok:
             critical.append(f"الملف {name}.py غير موجود في جذر المستودع")
+
+    prompt = root / "prompts" / "story_style.txt"
+    ok = prompt.is_file() and prompt.read_text(encoding="utf-8").strip() != ""
+    print(f"  {'OK     ' if ok else 'مفقود '} prompts/story_style.txt")
+    if not ok:
+        critical.append("الملف prompts/story_style.txt غير موجود أو فارغ (برومبت القصص)")
 
     print("== 2) المكتبات ==")
     for module, (is_critical, pip_name) in THIRD_PARTY.items():
