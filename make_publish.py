@@ -353,9 +353,14 @@ def publish(out_dir: Path) -> dict[str, Any]:
         resolve_src=lambda src: urls.get(src, src),
     )
 
-    requested = (os.getenv("BLOGGER_LABEL", "").strip()
-                 or str(result.get("category") or "").strip())
-    labels = split_labels(requested) or [DEFAULT_LABEL]
+    requested = os.getenv("BLOGGER_LABEL", "").strip()
+    if requested:                                    # تصنيف يدوي من المشغّل
+        labels = split_labels(requested)
+    elif isinstance(result.get("labels"), list) and result["labels"]:
+        labels = split_labels(",".join(str(x).replace(",", " ") for x in result["labels"]))
+    else:                                            # الأخبار: تصنيف الذكاء الاصطناعي
+        labels = split_labels(str(result.get("category") or ""))
+    labels = labels or [DEFAULT_LABEL]
     draft = _flag("BLOGGER_DRAFT")
 
     payload = {
