@@ -3,6 +3,9 @@
 
 يقرأ output/*/result.json ويختار المقالات التي نُشرت فعلًا (status = LIVE)
 وفيها رابط. تُقدَّم مقالات التصنيف نفسه أولًا، ثم الأحدث.
+
+kind يفصل القسمين: "news" (الأخبار، وهو الافتراضي ولا مفتاح له في الملفات القديمة)
+و"story" (القصص)، فلا تربط الأخبار بالقصص ولا العكس.
 """
 from __future__ import annotations
 
@@ -25,8 +28,9 @@ def published_articles(
     category: str = "",
     exclude_source: str = "",
     limit: int = MAX_CANDIDATES,
+    kind: str = "news",
 ) -> list[dict[str, str]]:
-    """قائمة [{title, url, summary, category}] لأحدث المقالات المنشورة."""
+    """قائمة [{title, url, summary, category}] لأحدث المقالات المنشورة من القسم kind."""
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
 
@@ -36,6 +40,8 @@ def published_articles(
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
+            continue
+        if str(data.get("kind") or "news") != kind:
             continue
 
         blog = data.get("blogger") if isinstance(data.get("blogger"), dict) else {}
