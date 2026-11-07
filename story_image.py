@@ -1,497 +1,156 @@
 """
-كاتب القصص: يولّد قصة أصلية كاملة بـ Gemini (مفتاح الكتابة GEMINI_WRITER_API_KEY).
+صور القصة: القصص بلا صور مصدر، فتُولَّد صورة سينمائية داكنة بالذكاء الاصطناعي
+(Cloudflare) بمقاس 4:5، ثم تُشتق منها:
+  - facebook_image.jpg : 4:5 (أو 3:4) مع التدرج والعنوان والإطار الأبيض (fb_cover.add_overlay)
+  - thumbnail.jpg      : 16:9 بقص أفقي للصورة نفسها مع العنوان، وتوضع أول المقال
 
-- التصنيف يفرضه الكود (دوران بين أربعة تصنيفات)، لا النموذج.
-- منع التكرار: يُمرَّر للنموذج سجل آخر القصص (الفكرة والصراع والمفاجأة والنهاية)،
-  ثم يفحص الكود تشابه الفكرة والمفاجأة مع السجل ويعيد المحاولة مرة عند التشابه.
-- الطول: إن جاءت القصة أقصر من STORY_MIN_WORDS (الافتراضي 1300) تُعاد كتابتها مرة.
-- لا احتياط من Groq: إن فشل Gemini لا تُنشر قصة ضعيفة، وتعيد المحاولة دورة cron التالية.
-- إعدادات أمان Gemini مخففة (BLOCK_ONLY_HIGH) كي لا تُحجب القصص المظلمة بلا داعٍ؛
-  وتُغيَّر من STORY_SAFETY_THRESHOLD (مثل BLOCK_NONE).
-- البرومبت الإبداعي في prompts/story_style.txt (يُعدَّل دون لمس الكود).
+سلّم التوليد عند الرفض أو التعثر (نفس منطق الصورة المصغرة للأخبار):
+  1) البرومبت الكامل  2) إعادة بنتيجة عشوائية مختلفة
+  3) نموذج احتياطي    4) نموذج احتياطي بوصف آمن بلا عنف
+انتهاء الحصة اليومية يوقف السلّم فورًا. وإن فشل كله تُرسم خلفية داكنة محليًا
+(بلون التصنيف) كي تُنشر القصة ولا تتعطل بسبب الصورة.
 """
 from __future__ import annotations
 
 import os
 import random
-import re
-import time
 from pathlib import Path
 from typing import Any
 
-import requests
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, ImageStat
 
-import gemini
-import grok
+import cloudflare_ai
+import fb_cover
 import story_categories
-from grok import GrokError
+from cloudflare_ai import CloudflareError
 
 
-STYLE_FILE = Path(__file__).resolve().parent / "prompts" / "story_style.txt"
-LINK_PLACEHOLDER = "{LINK}"
+BASE_SIZE = (1024, 1280)          # 4:5
+BLOG_SIZE = (1280, 720)           # 16:9
 
-MAX_HISTORY = 40
-MAX_OUTPUT_TOKENS = 24000
-REQUEST_TIMEOUT = 300
-ATTEMPTS = 5                    # لكل نموذج: يتحمل ازدحام Gemini (503) وحدود المعدل (429)
-PARSE_RETRIES = 2               # إعادة التوليد إن لم يكن الرد JSON صالحًا
-SIMILARITY_LIMIT = 0.45         # تشابه الفكرة أو المفاجأة (Jaccard) الذي يعدّ تكرارًا
-DEFAULT_MIN_WORDS = 1300
-
-LOG_KEYS = ("idea", "conflict", "characters", "setting", "opening", "twist", "ending")
-
-SAFETY_CATEGORIES = (
-    "HARM_CATEGORY_HARASSMENT",
-    "HARM_CATEGORY_HATE_SPEECH",
-    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-    "HARM_CATEGORY_DANGEROUS_CONTENT",
+STYLE_SUFFIX = (
+    " Cinematic still, dark moody atmosphere, dramatic low-key lighting, strong "
+    "contrast, shallow depth of field, photorealistic, rich detail. Keep the lower "
+    "third of the frame darker and uncluttered so a headline can be added later. "
+    "No text, no letters, no captions, no logos, no watermarks, no borders, no frames."
 )
 
-# قيود إبداعية عشوائية تكسر نمطية النموذج بين قصة وأخرى
-SETTINGS = (
-    "قرية جبلية معزولة في الشتاء", "مدينة ساحلية قديمة في موسم المطر",
-    "مستشفى قديم شبه مهجور", "فندق فاخر في موسم السياحة", "حي شعبي مزدحم في الصيف",
-    "قطار ليلي طويل", "مزرعة نائية وسط الحقول", "عمارة سكنية يعرف سكانها بعضهم",
-    "ميناء تجاري مزدحم", "مدرسة داخلية في الريف", "سوق قديم وأزقة ضيقة",
-    "قصر عائلي عريق", "شركة كبرى في برج زجاجي", "صحراء وقافلة أو مخيم",
-    "جزيرة صغيرة معزولة", "محطة وقود على طريق سريع ليلًا", "مكتبة أو أرشيف قديم",
-    "مقهى عتيق في وسط المدينة", "منجم أو مصنع مهجور", "قاعة مزاد أو معرض فني",
-    "حفل زفاف كبير في قاعة أفراح", "بيت ريفي بعد وفاة صاحبه", "مدينة ملاهٍ مغلقة",
-    "عيادة أو مختبر خاص", "حي راقٍ تحيط به أسوار وحراس",
-)
-VOICES = (
-    "راوٍ بضمير المتكلم يخفي شيئًا عن القارئ",
-    "راوٍ عليم بصوت هادئ يعرف أكثر من الشخصيات",
-    "سرد بالتناوب بين شخصيتين تريان الحدث نفسه بشكل مختلف",
-    "سرد يبدأ من النهاية ثم يعود إلى البداية ليشرح كيف وصلنا إليها",
-    "سرد يقدّم الحدث بعين الشاهد العادي لا البطل",
-    "سرد من منظور الشخصية التي تبدو شريرة في ظاهر الأمر",
-    "سرد تتخلله وثائق أو رسائل أو تسجيلات تكشف الحقيقة تدريجيًا",
-    "سرد خطي سريع بجمل قصيرة وإيقاع متصاعد",
-)
 
-HARD_FORMAT = """
-أعد JSON صالحًا فقط دون Markdown خارجه، بهذه المفاتيح بالضبط:
-{
-  "title": "عنوان القصة (حتى 65 حرفًا، جذاب، بلا كشف للمفاجأة)",
-  "article": "نص القصة الكامل بصيغة Markdown (من 1500 إلى 2200 كلمة) بلا العنوان الرئيسي",
-  "facebook_post": "منشور فيسبوك كاملًا: سطر العنوان بالرمز 🚨 أو ⚠️ ثم المقدمة ثم نقطة القطع ثم سطر التوجيه غير المباشر إلى أول تعليق",
-  "first_comment": "التعليق الأول: تتمة المنشور ثم دعوة لقراءة القصة ثم السطر الأخير {LINK} وحدها",
-  "hashtags": ["#وسم1", "#وسم2"],
-  "image_title": "عنوان قصير للصورة من 3 إلى 8 كلمات",
-  "image_highlight": "كلمة أو كلمتان منسوختان حرفيًا من image_title",
-  "image_prompt": "English only: one or two sentences describing a dark cinematic still for this story (setting, mood, lighting, one strong visual subject). No text, no letters, no logos.",
-  "seo": {
-    "focus_keyword": "الكلمة المفتاحية (2 إلى 4 كلمات)",
-    "meta_title": "عنوان SEO حتى 60 حرفًا",
-    "meta_description": "وصف ميتا بين 140 و160 حرفًا",
-    "slug": "english-short-slug",
-    "keywords": ["كلمة1", "كلمة2"]
-  },
-  "story_log": {
-    "idea": "الفكرة الأساسية في جملة أو جملتين",
-    "conflict": "الصراع الرئيسي",
-    "characters": "الشخصيات الرئيسية وصفاتها باختصار",
-    "setting": "المكان والزمان",
-    "opening": "نوع الافتتاحية (مشهد، سؤال، حوار...)",
-    "twist": "المفاجأة الرئيسية",
-    "ending": "نوع النهاية"
-  }
-}
-- "hashtags": من 5 إلى 10 وسوم مرتبطة بالقصة.
-- "seo.keywords": من 5 إلى 10 كلمات.
-- "story_log" وصف دقيق وصادق لما كتبته فعلًا؛ يُحفظ ويُستعمل لمنع تكرار الأفكار لاحقًا.
-- كل المفاتيح مطلوبة، والقصة كاملة داخل "article".
-""".strip()
-
-
-class StoryError(Exception):
-    """خطأ في كتابة القصة أو في مخرجات النموذج."""
-
-
-# ---------------------------------------------------------------------------
-# أدوات نصية
-# ---------------------------------------------------------------------------
-
-_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670\u0640]")
-_URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
-_EMOJI = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]")
-
-
-def _plain(text: str) -> str:
-    return _DIACRITICS.sub("", text or "")
-
-
-def _clean_line(text: Any, limit: int) -> str:
-    text = re.sub(r"\s+", " ", str(text or "")).strip()
-    text = text.replace("«", "").replace("»", "").replace('"', "")
-    return text[:limit].strip()
-
-
-def _tokens(text: str) -> set[str]:
-    words = re.findall(r"\w+", _plain(text).lower(), flags=re.UNICODE)
-    return {w for w in words if len(w) > 2}
-
-
-def _jaccard(a: str, b: str) -> float:
-    sa, sb = _tokens(a), _tokens(b)
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
-
-
-def _word_key(word: str) -> str:
-    return re.sub(r"[^\w]", "", word, flags=re.UNICODE)
-
-
-def word_count(text: str) -> int:
-    return len(re.findall(r"\S+", text or ""))
-
-
-def _env_int(name: str, default: int, low: int, high: int) -> int:
-    try:
-        return max(low, min(high, int(os.getenv(name, "").strip() or default)))
-    except ValueError:
+def _flag(name: str, default: bool) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
         return default
+    return value not in {"0", "false", "no", "off"}
 
 
-def _trim_description(text: str, limit: int = 160) -> str:
-    text = re.sub(r"\s+", " ", text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rsplit(" ", 1)[0].rstrip(" ،,.:؛") + "…"
+def _is_blank(image: Image.Image, threshold: float = 6.0) -> bool:
+    small = image.convert("L").resize((64, 64))
+    return ImageStat.Stat(small).stddev[0] < threshold
 
 
-def _slug(value: Any) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
-    return slug[:70] or "story"
+def procedural_background(size: tuple[int, int], accent: tuple[int, int, int]) -> Image.Image:
+    """خلفية داكنة سينمائية بلا إنترنت: تدرج بلون التصنيف + توهج + تعتيم الأطراف."""
+    W, H = size
+    top = tuple(int(c * 0.40) for c in accent)
+    bottom = (7, 7, 12)
+    ramp = Image.linear_gradient("L").resize((W, H))          # أسود أعلى → أبيض أسفل
+    img = Image.composite(Image.new("RGB", size, bottom),
+                          Image.new("RGB", size, top), ramp)
+
+    glow = Image.new("RGB", size, (0, 0, 0))
+    ImageDraw.Draw(glow).ellipse(
+        (W * 0.12, H * 0.10, W * 0.88, H * 0.62),
+        fill=tuple(int(c * 0.50) for c in accent))
+    img = ImageChops.screen(img, glow.filter(ImageFilter.GaussianBlur(W * 0.14)))
+
+    center = Image.new("L", size, 0)
+    ImageDraw.Draw(center).ellipse((W * 0.05, H * 0.03, W * 0.95, H * 0.97), fill=255)
+    center = center.filter(ImageFilter.GaussianBlur(W * 0.16))
+    return Image.composite(img, Image.new("RGB", size, (0, 0, 0)), center)
 
 
-# ---------------------------------------------------------------------------
-# السجل ومنع التكرار
-# ---------------------------------------------------------------------------
-
-def load_history(
-    output_root: Path = Path("output"), limit: int = MAX_HISTORY
-) -> list[dict[str, str]]:
-    """سجل آخر القصص (الأحدث أولًا): العنوان والتصنيف وعناصر story_log."""
-    rows = story_categories.load_story_results(output_root)[-limit:]
-    history = []
-    for row in reversed(rows):
-        log = row.get("story_log") if isinstance(row.get("story_log"), dict) else {}
-        entry = {"title": str(row.get("title") or ""),
-                 "category": str(row.get("category") or "")}
-        for key in LOG_KEYS:
-            entry[key] = str(log.get(key) or "")
-        history.append(entry)
-    return history
+def _prompts(story: dict[str, Any], info: dict[str, Any]) -> tuple[str, str]:
+    scene = (story.get("image_prompt") or "").strip()
+    if not scene:
+        scene = info["safe_image"]
+    return scene + STYLE_SUFFIX, info["safe_image"] + STYLE_SUFFIX
 
 
-def find_clash(
-    story: dict[str, Any], history: list[dict[str, str]]
-) -> tuple[dict[str, str], float] | None:
-    """أول قصة سابقة تتشابه معها هذه القصة (عنوان مطابق، أو فكرة/مفاجأة متقاربة)."""
-    title = _plain(story.get("title", "")).strip()
-    log = story.get("story_log") or {}
-    for old in history:
-        if title and title == _plain(old.get("title", "")).strip():
-            return old, 1.0
-        score = max(
-            _jaccard(log.get("idea", ""), old.get("idea", "")),
-            _jaccard(log.get("twist", ""), old.get("twist", "")),
-        )
-        if score >= SIMILARITY_LIMIT:
-            return old, score
-    return None
+def generate_base(
+    story: dict[str, Any], info: dict[str, Any]
+) -> tuple[Image.Image | None, dict[str, Any]]:
+    """يعيد (الصورة أو None، معلومات المحاولات). لا يرفع أخطاء Cloudflare."""
+    notes: list[str] = []
+    if not _flag("CF_IMAGE_ENABLED", True):
+        return None, {"source": "procedural", "reason": "CF_IMAGE_ENABLED معطّل."}
+    if not cloudflare_ai.is_configured():
+        return None, {"source": "procedural", "reason": "مفاتيح Cloudflare غير مضبوطة."}
 
-
-# ---------------------------------------------------------------------------
-# بناء التعليمات
-# ---------------------------------------------------------------------------
-
-def _style_rules() -> str:
-    for path in (STYLE_FILE, Path("prompts") / "story_style.txt"):
+    main_prompt, safe_prompt = _prompts(story, info)
+    fallback = cloudflare_ai.fallback_model_name()
+    steps = [
+        ("الأساسية", None, main_prompt),
+        ("إعادة بنتيجة مختلفة", None, main_prompt),
+        ("نموذج احتياطي", fallback, main_prompt),
+        ("نموذج احتياطي بوصف آمن", fallback, safe_prompt),
+    ]
+    for number, (label, model, prompt) in enumerate(steps, start=1):
+        seed = random.randint(1, 2**31 - 1)
         try:
-            if path.is_file():
-                text = path.read_text(encoding="utf-8").strip()
-                if text:
-                    return text
-        except OSError:
+            image = cloudflare_ai.generate_image(
+                prompt, [], BASE_SIZE[0], BASE_SIZE[1], seed, model=model)
+            if _is_blank(image):
+                raise CloudflareError("الصورة المولّدة فارغة تقريبًا.")
+        except cloudflare_ai.CloudflareQuotaError as exc:
+            notes.append(f"{label}: انتهت الحصة اليومية")
+            print("::warning title=حصة Cloudflare::انتهت الحصة اليومية؛ "
+                  "تُرسم خلفية محلية.")
+            return None, {"source": "procedural", "reason": " | ".join(notes) or str(exc)}
+        except CloudflareError as exc:
+            notes.append(f"{label}: {exc}")
+            print(f"::warning title=تعذر توليد صورة القصة ({label})::{exc}")
             continue
-    raise StoryError("ملف التعليمات prompts/story_style.txt غير موجود أو فارغ.")
+        return image, {"source": "cloudflare", "model": model or cloudflare_ai.model_name(),
+                       "attempt": number, "attempt_label": label,
+                       "reason": " | ".join(notes)}
+    return None, {"source": "procedural", "reason": " | ".join(notes)}
 
 
-def _history_block(history: list[dict[str, str]]) -> str:
-    if not history:
-        return ("لا توجد قصص سابقة بعد. لا تدّعِ أنك تحققت من قصص سابقة، "
-                "لكن ابتكر فكرة مستقلة وغير نمطية.")
-    lines = []
-    for old in history:
-        lines.append(
-            f"- «{old['title']}» [{old['category']}] فكرة: {old['idea'][:160]} | "
-            f"صراع: {old['conflict'][:100]} | مكان: {old['setting'][:80]} | "
-            f"افتتاحية: {old['opening'][:60]} | مفاجأة: {old['twist'][:160]} | "
-            f"نهاية: {old['ending'][:100]}"
-        )
-    return (
-        "سجل القصص السابقة المنشورة (الأحدث أولًا). لا تكرر أي فكرة أو صراع أو مكان "
-        "أو افتتاحية أو مفاجأة أو نهاية منها، ولا تدوّر قصة منها بتفاصيل جديدة:\n"
-        + "\n".join(lines)
-    )
-
-
-def build_system(category: str, history: list[dict[str, str]]) -> str:
+def build_story_images(
+    story: dict[str, Any], category: str, out_dir: Path
+) -> dict[str, Any]:
+    """ينشئ facebook_image.jpg و thumbnail.jpg في out_dir ويعيد معلومات عنهما."""
     info = story_categories.category_info(category)
-    return "\n\n".join([
-        _style_rules(),
-        f"تصنيف هذه القصة (ثابت، لا تغيّره ولا تخلطه بغيره): {category}\n"
-        f"نطاقه: {info['description']}",
-        _history_block(history),
-        HARD_FORMAT,
-    ])
+    base, meta = generate_base(story, info)
+    if base is None:
+        base = procedural_background(BASE_SIZE, info["accent"])
+        print(f"تنبيه: خلفية محلية لصورة القصة ({meta.get('reason', '')}).")
+    base = base.convert("RGB")
 
+    text_enabled = os.getenv("ADD_IMAGE_TEXT", "").strip().lower() not in {
+        "0", "false", "no", "off"}
+    headline = story["image_title"] if text_enabled else None
+    highlight = story.get("image_highlight") or ""
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-def build_user(rng: random.Random | None = None, extra: str = "") -> str:
-    rng = rng or random.Random()
-    setting, voice = rng.choice(SETTINGS), rng.choice(VOICES)
-    return (
-        "اكتب الآن قصة جديدة كاملة وفق التعليمات، بفكرة مختلفة جذريًا عن السجل.\n"
-        f"قيد إبداعي لتنويع هذه القصة (التزم به ما دام لا يضعف القصة): "
-        f"البيئة: {setting}. زاوية السرد: {voice}.\n"
-        "أعد JSON فقط." + extra
-    )
+    # 1) فيسبوك: 4:5 (أو 3:4) كاملة الإطار
+    fb_size = (fb_cover.IMAGE_SIZE, fb_cover.facebook_height())
+    picture = ImageOps.fit(base, fb_size, Image.Resampling.LANCZOS)
+    fb_image, fb_text = fb_cover.add_overlay(picture, headline, highlight)
+    fb_image.save(out_dir / "facebook_image.jpg", "JPEG", quality=93, optimize=True)
 
-
-# ---------------------------------------------------------------------------
-# الاتصال بـ Gemini
-# ---------------------------------------------------------------------------
-
-def _models() -> list[str]:
-    custom = os.getenv("GEMINI_WRITER_MODEL", "").strip()
-    return [custom] if custom else list(gemini.DEFAULT_MODELS)
-
-
-def _call_gemini(system: str, user: str, temperature: float = 0.95) -> tuple[str, str]:
-    """يعيد (النص، اسم النموذج). يرفع StoryError إن فشلت كل النماذج."""
-    key = os.getenv("GEMINI_WRITER_API_KEY", "").strip()
-    if not key:
-        raise StoryError("المفتاح GEMINI_WRITER_API_KEY غير موجود في GitHub Secrets.")
-
-    threshold = os.getenv("STORY_SAFETY_THRESHOLD", "").strip() or "BLOCK_ONLY_HIGH"
-    body = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": MAX_OUTPUT_TOKENS,
-            "responseMimeType": "application/json",
-        },
-        "safetySettings": [
-            {"category": c, "threshold": threshold} for c in SAFETY_CATEGORIES
-        ],
-    }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-    last = "فشل الاتصال بواجهة Gemini."
-
-    for model in _models():
-        url = f"{gemini.GEMINI_BASE_URL}/{model}:generateContent"
-        for attempt in range(1, ATTEMPTS + 1):
-            try:
-                response = requests.post(url, headers=headers, json=body,
-                                         timeout=REQUEST_TIMEOUT)
-            except requests.RequestException as exc:
-                last = f"تعذر الاتصال بـ Gemini: {exc}"
-            else:
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                    except ValueError:
-                        last = "أعاد Gemini استجابة ليست JSON صالحًا."
-                        break
-                    try:
-                        return gemini._extract_text(data), model
-                    except gemini.GeminiError as exc:
-                        last = f"{model}: {exc}"      # حجب أو اقتطاع: جرّب النموذج التالي
-                        break
-                last = (f"خطأ Gemini HTTP {response.status_code} ({model}): "
-                        f"{response.text[:300]}")
-                if response.status_code == 429 and "PerDay" in response.text:
-                    break                             # حصة اليوم انتهت لهذا النموذج
-                if response.status_code in (400, 404):
-                    break                             # طلب مرفوض أو نموذج غير موجود
-                if response.status_code not in gemini.RETRY_STATUS:
-                    raise StoryError(last)
-            if attempt < ATTEMPTS:
-                wait = min(10 * 2 ** (attempt - 1), 90)
-                print(f"تحذير: محاولة Gemini {attempt} فشلت ({last[:140]}) "
-                      f"إعادة المحاولة بعد {wait} ثانية.")
-                time.sleep(wait)
-    raise StoryError(last)
-
-
-# ---------------------------------------------------------------------------
-# التطبيع والتحقق
-# ---------------------------------------------------------------------------
-
-def _normalize_comment(value: Any) -> str:
-    """التعليق الأول: بلا روابط حقيقية، و{LINK} مرة واحدة في آخره."""
-    comment = _URL.sub("", str(value or "")).strip()
-    if len(comment) < 40:
-        raise StoryError("حقل first_comment مفقود أو قصير جدًا.")
-    parts = comment.split(LINK_PLACEHOLDER)
-    if len(parts) == 1:
-        comment = comment.rstrip() + f"\n\nالقصة كاملة هنا: {LINK_PLACEHOLDER}"
-    elif len(parts) > 2:
-        comment = parts[0] + LINK_PLACEHOLDER + "".join(parts[1:])
-    return comment
-
-
-def normalize(raw: dict[str, Any], category: str) -> dict[str, Any]:
-    title = _clean_line(raw.get("title"), 120)
-    article = _URL.sub("", str(raw.get("article") or "")).strip()
-    post = _URL.sub("", str(raw.get("facebook_post") or "")).strip()
-
-    if not title:
-        raise StoryError("حقل title مفقود أو فارغ.")
-    if word_count(article) < 200:
-        raise StoryError("نص القصة مفقود أو قصير جدًا.")
-    if not post:
-        raise StoryError("حقل facebook_post مفقود أو فارغ.")
-
-    article = re.sub(r"^\s*#\s+[^\n]*\n+", "", article, count=1)   # لا نكرر العنوان
-    first_comment = _normalize_comment(raw.get("first_comment"))
-
-    tags: list[str] = []
-    for item in raw.get("hashtags") or []:
-        tag = grok._normalize_hashtag(item)
-        if tag and tag not in tags:
-            tags.append(tag)
-
-    image_title = _EMOJI.sub("", _clean_line(raw.get("image_title"), 90)).strip() or title
-    image_words = {_word_key(w) for w in image_title.split()}
-    highlight = [
-        w for w in str(raw.get("image_highlight") or "").split()
-        if _word_key(w) and _word_key(w) in image_words
-    ][:3]
-
-    seo_raw = raw.get("seo") if isinstance(raw.get("seo"), dict) else {}
-    seo = {
-        "focus_keyword": _clean_line(seo_raw.get("focus_keyword"), 60),
-        "meta_title": _clean_line(seo_raw.get("meta_title") or title, 70),
-        "meta_description": _trim_description(
-            _clean_line(seo_raw.get("meta_description"), 400)),
-        "slug": _slug(seo_raw.get("slug")),
-        "keywords": [
-            _clean_line(k, 40) for k in (seo_raw.get("keywords") or [])
-            if _clean_line(k, 40)
-        ][:10],
-    }
-
-    log_raw = raw.get("story_log") if isinstance(raw.get("story_log"), dict) else {}
-    story_log = {k: _clean_line(log_raw.get(k), 300) for k in LOG_KEYS}
-    if not story_log["idea"]:
-        story_log["idea"] = title
-
-    image_prompt = re.sub(r"\s+", " ", str(raw.get("image_prompt") or "")).strip()[:900]
+    # 2) المدونة: شريط أفقي 16:9 من الصورة نفسها (أعلى قليلًا من الوسط)
+    bw, bh = base.size
+    crop_h = min(bh, round(bw * BLOG_SIZE[1] / BLOG_SIZE[0]))
+    y0 = int((bh - crop_h) * 0.38)
+    wide = base.crop((0, y0, bw, y0 + crop_h)).resize(BLOG_SIZE, Image.Resampling.LANCZOS)
+    wide_image, wide_text = fb_cover.add_overlay(wide, headline, highlight)
+    wide_image.save(out_dir / "thumbnail.jpg", "JPEG", quality=92, optimize=True)
 
     return {
-        "title": title,
-        "article": article,
-        "facebook_post": post,
-        "first_comment": first_comment,
-        "hashtags": tags[:10],
-        "image_title": image_title,
-        "image_highlight": " ".join(highlight),
-        "image_prompt": image_prompt,
-        "seo": seo,
-        "story_log": story_log,
-        "category": category,
+        "facebook": {"file": "facebook_image.jpg", "size": list(fb_size), "text": fb_text},
+        "thumbnail": {"file": "thumbnail.jpg", "size": list(BLOG_SIZE), "text": wide_text,
+                      "source": meta.get("source"), "model": meta.get("model"),
+                      "reason": meta.get("reason", "")},
+        "generation": meta,
     }
-
-
-def append_related(article: str, related: list[dict[str, str]], limit: int = 2) -> tuple[str, list[dict[str, str]]]:
-    """يلحق سطور «اقرأ أيضًا» بقصص سابقة منشورة (روابط حقيقية) في آخر القصة."""
-    used: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in related:
-        url = str(item.get("url") or "").strip()
-        title = re.sub(r"[\[\]()]", "", str(item.get("title") or "")).strip()
-        if not url or not title or url in seen:
-            continue
-        seen.add(url)
-        used.append({"title": title, "url": url})
-        if len(used) >= limit:
-            break
-    if not used:
-        return article, used
-    lines = [f"**اقرأ أيضًا:** [{item['title']}]({item['url']})" for item in used]
-    return article.rstrip() + "\n\n" + "\n\n".join(lines), used
-
-
-# ---------------------------------------------------------------------------
-# الكتابة
-# ---------------------------------------------------------------------------
-
-def _write_once(system: str, user: str, category: str) -> tuple[dict[str, Any], str]:
-    """رد صالح من النموذج؛ يعيد التوليد إن لم يكن JSON أو نقصت حقوله."""
-    last: Exception | None = None
-    for number in range(1, PARSE_RETRIES + 2):
-        text, model = _call_gemini(system, user)
-        try:
-            return normalize(grok._extract_json(text), category), model
-        except (GrokError, StoryError, ValueError, KeyError, TypeError) as exc:
-            last = exc
-            print(f"تحذير: رد Gemini غير صالح (المحاولة {number}): {exc}")
-    raise StoryError(f"تعذر الحصول على قصة صالحة: {last}")
-
-
-def write_story(
-    category: str,
-    history: list[dict[str, str]],
-    rng: random.Random | None = None,
-) -> dict[str, Any]:
-    """
-    يكتب قصة كاملة للتصنيف المحدد. جولتان على الأكثر: الثانية فقط إن كانت الأولى قصيرة
-    أو متشابهة مع السجل، وتُختار الأفضل منهما.
-    """
-    min_words = _env_int("STORY_MIN_WORDS", DEFAULT_MIN_WORDS, 300, 3000)
-    system = build_system(category, history)
-    extra = ""
-    best: tuple[tuple, dict[str, Any]] | None = None
-
-    for round_no in (1, 2):
-        data, model = _write_once(system, build_user(rng, extra), category)
-        words = word_count(data["article"])
-        problems: list[str] = []
-        if words < min_words:
-            problems.append(f"القصة قصيرة ({words} كلمة)؛ المطلوب من 1500 إلى 2200 كلمة")
-        clash = find_clash(data, history)
-        if clash:
-            old, score = clash
-            problems.append(
-                f"تشابه ({score:.0%}) مع القصة السابقة «{old['title']}» "
-                f"(فكرة: {old['idea'][:120]} | مفاجأة: {old['twist'][:120]})")
-
-        data["writer"] = {"provider": "gemini", "model": model, "attempts": round_no}
-        data["stats"] = {"words": words,
-                         "reading_minutes": max(1, round(words / 180)),
-                         "min_words": min_words}
-        data["problems"] = problems
-
-        rank = (not problems, -len(problems), words)
-        if best is None or rank > best[0]:
-            best = (rank, data)
-        if not problems:
-            break
-
-        print("تنبيه: " + " | ".join(problems) + "؛ إعادة كتابة.")
-        extra = ("\n\nالنسخة السابقة لم تقبل للأسباب التالية، فاكتب قصة جديدة مختلفة "
-                 "كليًا ولا تكرر الأخطاء: " + " | ".join(problems))
-
-    assert best is not None
-    final = best[1]
-    if final["stats"]["words"] < int(min_words * 0.75):
-        raise StoryError(
-            f"القصة أقصر من المقبول ({final['stats']['words']} كلمة، "
-            f"الحد الأدنى {int(min_words * 0.75)}). تُعاد المحاولة لاحقًا.")
-    return final
