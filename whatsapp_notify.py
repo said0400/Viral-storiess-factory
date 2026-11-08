@@ -1,10 +1,11 @@
 """
 إرسال حزمة المنشور إلى واتساب عبر GREEN-API بعد اكتمال النشر.
 
-يرسل ثلاث رسائل بالترتيب:
+يرسل الرسائل بالترتيب:
   1) صورة فيسبوك (facebook_image.jpg)
   2) نص المنشور مع الهاشتاغات (facebook_post.txt)
   3) نص التعليق الأول وفيه رابط المقال (first_comment.txt)
+  4) رابط فيديو القصة على يوتيوب (إن وُجد youtube_url في result.json)
 
 الأسرار المطلوبة (GitHub Secrets):
   GREENAPI_ID_INSTANCE   رقم الـ instance من لوحة GREEN-API
@@ -19,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -187,10 +189,20 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
 
 
+def _video_url(out_dir: Path) -> str:
+    """رابط فيديو القصة على يوتيوب من result.json (فارغ للأخبار وللقصص بلا فيديو)."""
+    try:
+        data = json.loads(_read(out_dir / "result.json") or "{}")
+    except ValueError:
+        return ""
+    return str(data.get("youtube_url") or "").strip() if isinstance(data, dict) else ""
+
+
 def notify(out_dir: Path, cfg: dict[str, str]) -> int:
     post = _read(out_dir / "facebook_post.txt")
     comment = _read(out_dir / "first_comment.txt")
     image = out_dir / "facebook_image.jpg"
+    video_url = _video_url(out_dir)
 
     if not post and not comment and not image.is_file():
         raise WhatsAppError(f"لا توجد ملفات للإرسال في {out_dir}.")
@@ -228,6 +240,12 @@ def notify(out_dir: Path, cfg: dict[str, str]) -> int:
                            "المقال في التعليق الأول لم يُعبَّأ بعد "
                            "(الوسم {LINK}).")
             print("::warning title=واتساب::التعليق الأول ما زال فيه {LINK}.")
+
+    if video_url:
+        time.sleep(GAP_SECONDS)
+        send_text(cfg, f"🎬 فيديو القصة مسموعة على يوتيوب:\n{video_url}")
+        sent += 1
+        print("أُرسل رابط الفيديو.")
 
     print(f"اكتمل الإرسال إلى واتساب ({sent} رسائل).")
     return sent
