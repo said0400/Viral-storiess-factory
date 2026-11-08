@@ -3,6 +3,7 @@
 (Cloudflare) بمقاس 4:5، ثم تُشتق منها:
   - facebook_image.jpg : 4:5 (أو 3:4) مع التدرج والعنوان والإطار الأبيض (fb_cover.add_overlay)
   - thumbnail.jpg      : 16:9 بقص أفقي للصورة نفسها مع العنوان، وتوضع أول المقال
+  - video_frame.jpg    : (في work_dir) القص 16:9 نفسه بلا نص، لفيديو القصة
 
 سلّم التوليد عند الرفض أو التعثر (نفس منطق الصورة المصغرة للأخبار):
   1) البرومبت الكامل  2) إعادة بنتيجة عشوائية مختلفة
@@ -117,9 +118,14 @@ def generate_base(
 
 
 def build_story_images(
-    story: dict[str, Any], category: str, out_dir: Path
+    story: dict[str, Any], category: str, out_dir: Path,
+    work_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """ينشئ facebook_image.jpg و thumbnail.jpg في out_dir ويعيد معلومات عنهما."""
+    """
+    ينشئ facebook_image.jpg و thumbnail.jpg في out_dir ويعيد معلومات عنهما.
+    وإن حُدد work_dir يحفظ فيه video_frame.jpg: إطار 16:9 بلا نص لفيديو القصة
+    (خارج output/ فلا يدخل المستودع).
+    """
     info = story_categories.category_info(category)
     base, meta = generate_base(story, info)
     if base is None:
@@ -147,10 +153,19 @@ def build_story_images(
     wide_image, wide_text = fb_cover.add_overlay(wide, headline, highlight)
     wide_image.save(out_dir / "thumbnail.jpg", "JPEG", quality=92, optimize=True)
 
+    # 3) إطار الفيديو: القص نفسه بلا نص، بدقة أعلى ليتحمل التحريك
+    video_frame = None
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        video_frame = work_dir / "video_frame.jpg"
+        wide.resize((1920, 1080), Image.Resampling.LANCZOS).save(
+            video_frame, "JPEG", quality=95)
+
     return {
         "facebook": {"file": "facebook_image.jpg", "size": list(fb_size), "text": fb_text},
         "thumbnail": {"file": "thumbnail.jpg", "size": list(BLOG_SIZE), "text": wide_text,
                       "source": meta.get("source"), "model": meta.get("model"),
                       "reason": meta.get("reason", "")},
+        "video_frame": str(video_frame) if video_frame else None,
         "generation": meta,
     }
