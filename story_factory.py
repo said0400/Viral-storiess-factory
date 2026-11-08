@@ -25,6 +25,7 @@ import story_writer
 from story_writer import StoryError
 
 OUTPUT_ROOT = Path("output")
+WORK_ROOT = Path(os.getenv("STORY_WORK_DIR", "").strip() or "story_work")
 
 
 def write_text_file(path: Path, content: str) -> None:
@@ -32,13 +33,15 @@ def write_text_file(path: Path, content: str) -> None:
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
-def publish_output_dir(out_dir: Path) -> None:
-    """يكتب مسار مجلد هذه القصة فقط ليرفعه الـ workflow دون بقية المشاريع."""
+def publish_output_dir(out_dir: Path, work_dir: Path | None = None) -> None:
+    """يكتب مسار مجلد هذه القصة (ومجلد عمل الفيديو) ليستعملهما الـ workflow."""
     target = os.getenv("GITHUB_OUTPUT")
     if not target:
         return
     with open(target, "a", encoding="utf-8") as handle:
         handle.write(f"out_dir={out_dir.as_posix()}\n")
+        if work_dir is not None:
+            handle.write(f"work_dir={work_dir.as_posix()}\n")
 
 
 def build_seo_text(story: dict[str, Any]) -> str:
@@ -102,7 +105,8 @@ def run() -> Path:
     out_dir = OUTPUT_ROOT / digest
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    images = story_image.build_story_images(story, category, out_dir)
+    work_dir = WORK_ROOT / digest
+    images = story_image.build_story_images(story, category, out_dir, work_dir)
 
     post_text = story["facebook_post"]
     if story["hashtags"]:
@@ -142,7 +146,7 @@ def run() -> Path:
     (out_dir / "result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    publish_output_dir(out_dir)
+    publish_output_dir(out_dir, work_dir)
     print("\nاكتمل إنشاء القصة:", out_dir)
     for name in ("facebook_image.jpg", "thumbnail.jpg", "facebook_post.txt",
                  "first_comment.txt", "rewritten_article.md", "seo.txt",
