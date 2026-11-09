@@ -186,6 +186,7 @@ jobs:
         env:
           STORY_CATEGORY: ${{ inputs.story_category != 'auto' && inputs.story_category || '' }}
           STORY_MIN_WORDS: ${{ vars.STORY_MIN_WORDS }}
+          STORY_SCENES: ${{ vars.STORY_SCENES }}
           STORY_SAFETY_THRESHOLD: ${{ vars.STORY_SAFETY_THRESHOLD }}
           GEMINI_WRITER_API_KEY: ${{ secrets.GEMINI_WRITER_API_KEY }}
           GEMINI_WRITER_MODEL: ${{ vars.GEMINI_WRITER_MODEL }}
@@ -233,6 +234,12 @@ jobs:
           GEMINI_TTS_API_KEY: ${{ secrets.GEMINI_TTS_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_WRITER_API_KEY: ${{ secrets.GEMINI_WRITER_API_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_IMAGE_MODEL: ${{ vars.CF_IMAGE_MODEL }}
+          CF_IMAGE_FALLBACK_MODEL: ${{ vars.CF_IMAGE_FALLBACK_MODEL }}
+          CF_IMAGE_ENABLED: ${{ vars.CF_IMAGE_ENABLED }}
+          STORY_SCENES: ${{ vars.STORY_SCENES }}
           GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL }}
           GEMINI_TTS_VOICE: ${{ vars.GEMINI_TTS_VOICE }}
           STORY_TTS_STYLE: ${{ vars.STORY_TTS_STYLE }}
