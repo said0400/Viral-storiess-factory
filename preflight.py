@@ -40,7 +40,9 @@ EXPECTED: dict[str, list[str]] = {
     "story_writer": ["write_story", "load_history", "append_related"],
     "story_image": ["build_story_images"],
     "story_factory": ["main", "run"],
-    "story_video": ["main", "run", "clean_story_text", "insert_video_links"],
+    "story_text": ["clean_story_text", "story_paragraphs", "split_chunks"],
+    "story_scenes": ["make_storyboard", "generate_scene_images", "scene_segments"],
+    "story_video": ["main", "run", "clean_story_text", "insert_video_links", "make_slideshow"],
     "whatsapp_notify": ["main", "notify"],
 }
 
