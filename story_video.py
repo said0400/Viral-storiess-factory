@@ -1,14 +1,19 @@
 """
-فيديو القصة: يحوّل نص القصة إلى صوت بـ Gemini TTS، ويركّبه على صورة 16:9 بلا نص مع
-تحريك بسيط (تكبير وانسياب بطيئان)، ثم ينشره على يوتيوب عبر Make ويضع رابطه في القصة.
+فيديو القصة: يحوّل نص القصة إلى صوت بـ Gemini TTS، ويعرض عليه صور مشاهد القصة نفسها
+(من لوحة المشاهد) بتحريك بسيط، ثم ينشره على يوتيوب عبر Make ويضع رابطه في القصة.
 
 المراحل:
   1) تنظيف النص وتقسيمه إلى مقاطع (حد المخرج الصوتي في الطلب الواحد) ثم تحويل كل مقطع.
-  2) ffmpeg: مقطع تحريك دوري (ping-pong) يُكرَّر بلا إعادة ترميز + الصوت = story.mp4
-  3) رفع story.mp4 إلى GitHub Releases (رابط عام) فيُرسَل الرابط إلى Make لا الملف.
-  4) Make يرفع إلى يوتيوب. نقرأ رابط الفيديو من رد Make (youtube_url أو video_id)،
+  2) صور المشاهد: لكل مشهد من لوحة المشاهد (result.json -> storyboard) صورة 16:9 تظهر في
+     الوقت الذي تُروى فيه أحداثه، بتكبير/انسياب بطيء وانتقال عبر الأسود. وإن لم توجد لوحة
+     أو فشل توليد الصور يُستعمل إطار الغلاف وحده بتحريك دوري.
+  3) الدمج بـ ffmpeg (مقاطع تُضم بالنسخ + الصوت مع ضبط الشدة)، ثم التحقق من أن الصوت
+     موجود ومسموع في الملف النهائي؛ وإن لم يكن يُعاد الدمج بإعادة الترميز، وإن فشل يفشل
+     الإنتاج برسالة واضحة بدل نشر فيديو صامت.
+  4) رفع story.mp4 إلى GitHub Releases (رابط عام) فيُرسَل الرابط إلى Make لا الملف.
+  5) Make يرفع إلى يوتيوب. نقرأ رابط الفيديو من رد Make (youtube_url أو video_id)،
      وإلا نراقب خلاصة RSS لقناتك (YOUTUBE_CHANNEL_ID) حتى يظهر الفيديو بعنوانه.
-  5) نضع رابط الفيديو في القصة: أعلاها ووسطها وآخرها، ونحفظه في result.json.
+  6) نضع رابط الفيديو في القصة: أعلاها ووسطها وآخرها، ونحفظه في result.json.
 
 STORY_TTS_STYLE / STORY_TTS_OUTRO: النص الافتراضي إن تُركا فارغين، و none يعطّلهما.
 STORY_VIDEO: off = تعطيل | local = صوت وفيديو للفحص فقط (بلا رفع) | full = كل المراحل.
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import shutil
@@ -30,11 +36,21 @@ import sys
 import time
 import wave
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
+
+import story_scenes
+from story_text import (  # clean_story_text و split_chunks متاحتان أيضًا من هذه الوحدة
+    RELATED_MARK,
+    clean_story_text,
+    plain as _plain,
+    split_chunks,
+    story_paragraphs,
+)
 
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -56,23 +72,15 @@ SAFETY_CATEGORIES = (
 CHUNK_WORDS = 420            # نحو 3 دقائق صوت: دون حد المخرج الصوتي للطلب الواحد
 CHUNK_GAP_SECONDS = 6        # فاصل بين طلبات TTS لتفادي حد الطلبات في الدقيقة
 PAUSE_SECONDS = 0.5          # صمت بين المقاطع
-CLIP_SECONDS = 60            # طول التحريك الدوري (يُكرَّر حتى نهاية الصوت)
-CLIP_FPS = 15
+CLIP_SECONDS = 60            # طول التحريك الدوري لوضع الإطار الواحد
+FPS = 15
 VIDEO_SIZE = (1280, 720)
-
-RELATED_MARK = "اقرأ أيضا"   # بلا تشكيل، للمقارنة
-VIDEO_MARK = "🎧"
-
-_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670\u0640]")
-_URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"   # شدة صوت موحدة مناسبة ليوتيوب
+MIN_AUDIBLE_DB = -55.0                         # أقل متوسط شدة نعدّه مسموعًا
 
 
 class VideoError(Exception):
     """خطأ في إنتاج الفيديو أو نشره."""
-
-
-def _plain(text: str) -> str:
-    return _DIACRITICS.sub("", text or "")
 
 
 def _env_int(name: str, default: int, low: int, high: int) -> int:
@@ -100,69 +108,7 @@ def video_mode() -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1) النص: تنظيف وتقسيم
-# ---------------------------------------------------------------------------
-
-def clean_story_text(markdown: str) -> str:
-    """نص صالح للقراءة بصوت عالٍ: بلا Markdown ولا روابط ولا سطور «اقرأ أيضًا» أو الروابط الصوتية."""
-    lines: list[str] = []
-    for raw in (markdown or "").splitlines():
-        line = raw.strip()
-        if not line:
-            lines.append("")
-            continue
-        if line.startswith("# "):                       # العنوان الرئيسي (يُقرأ منفصلًا)
-            continue
-        plain = _plain(line)
-        if RELATED_MARK in plain or VIDEO_MARK in line:
-            continue
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)
-        line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)
-        line = _URL.sub("", line).replace("**", "").replace("*", "")
-        lines.append(line.strip())
-    text = "\n".join(lines)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def _split_sentences(paragraph: str) -> list[str]:
-    parts = re.split(r"(?<=[.!؟?…؛])\s+", paragraph)
-    return [p for p in parts if p.strip()]
-
-
-def split_chunks(text: str, max_words: int = CHUNK_WORDS) -> list[str]:
-    """مقاطع بحدود الفقرات (وبحدود الجمل للفقرة الطويلة جدًا)، كل منها حتى max_words كلمة."""
-    units: list[str] = []
-    for para in re.split(r"\n{2,}", text.strip()):
-        para = para.strip()
-        if not para:
-            continue
-        if len(para.split()) <= max_words:
-            units.append(para)
-        else:
-            buf: list[str] = []
-            for sentence in _split_sentences(para):
-                if buf and len(" ".join(buf + [sentence]).split()) > max_words:
-                    units.append(" ".join(buf))
-                    buf = []
-                buf.append(sentence)
-            if buf:
-                units.append(" ".join(buf))
-
-    chunks: list[str] = []
-    current: list[str] = []
-    for unit in units:
-        if current and len("\n\n".join(current + [unit]).split()) > max_words:
-            chunks.append("\n\n".join(current))
-            current = []
-        current.append(unit)
-    if current:
-        chunks.append("\n\n".join(current))
-    return chunks
-
-
-# ---------------------------------------------------------------------------
-# 2) الصوت: Gemini TTS
+# 1) الصوت: Gemini TTS
 # ---------------------------------------------------------------------------
 
 def _tts_keys() -> list[str]:
@@ -270,7 +216,10 @@ def tts_chunk(text: str) -> tuple[bytes, int]:
 
 
 def synthesize(text: str, wav_path: Path, title: str = "") -> dict[str, Any]:
-    """يحوّل النص كله إلى WAV واحد (مقاطع مفصولة بصمت قصير) ويعيد معلومات عنه."""
+    """
+    يحوّل النص كله إلى WAV واحد (مقاطع مفصولة بصمت قصير). يعيد معلومات تشمل نصوص
+    المقاطع ومدة كل منها، لتحويل أرقام فقرات المشاهد إلى توقيت في الصوت.
+    """
     outro = _text_setting("STORY_TTS_OUTRO", DEFAULT_OUTRO)
     spoken = (f"{title.strip()}.\n\n" if title.strip() else "") + text
     if outro:
@@ -281,6 +230,7 @@ def synthesize(text: str, wav_path: Path, title: str = "") -> dict[str, Any]:
     print(f"الصوت: {len(chunks)} مقاطع.")
 
     pcm_parts: list[bytes] = []
+    seconds_each: list[float] = []
     rate = 0
     for number, chunk in enumerate(chunks, start=1):
         print(f"  تحويل المقطع {number}/{len(chunks)} ({len(chunk.split())} كلمة)...")
@@ -291,6 +241,7 @@ def synthesize(text: str, wav_path: Path, title: str = "") -> dict[str, Any]:
             raise VideoError(f"معدلات العيّنة مختلفة بين المقاطع ({rate} و{chunk_rate}).")
         rate = chunk_rate
         pcm_parts.append(pcm)
+        seconds_each.append(len(pcm) / 2 / rate)
         if number < len(chunks):
             time.sleep(CHUNK_GAP_SECONDS)
 
@@ -304,11 +255,12 @@ def synthesize(text: str, wav_path: Path, title: str = "") -> dict[str, Any]:
         handle.writeframes(pcm_all)
     seconds = len(pcm_all) / 2 / rate
     print(f"مدة الصوت: {seconds / 60:.1f} دقيقة.")
-    return {"chunks": len(chunks), "seconds": seconds, "rate": rate}
+    return {"chunks": len(chunks), "chunk_texts": chunks, "chunk_seconds": seconds_each,
+            "seconds": seconds, "rate": rate}
 
 
 # ---------------------------------------------------------------------------
-# 3) الفيديو: ffmpeg
+# 2) الفيديو: ffmpeg
 # ---------------------------------------------------------------------------
 
 def ffmpeg_bin() -> str:
@@ -325,9 +277,84 @@ def _run(cmd: list[str], what: str) -> str:
     return result.stderr
 
 
+def _db(text: str, key: str) -> float | None:
+    match = re.search(rf"{key}:\s*(-?[\d.]+|-inf) dB", text)
+    if not match:
+        return None
+    return -120.0 if match.group(1) == "-inf" else float(match.group(1))
+
+
+def audio_report(path: Path) -> dict[str, Any]:
+    """هل في الملف مسار صوت؟ وما شدته (متوسط وأعلى)؟ (ffmpeg volumedetect)"""
+    result = subprocess.run(
+        [ffmpeg_bin(), "-hide_banner", "-i", str(path), "-vn", "-af", "volumedetect",
+         "-f", "null", "-"], capture_output=True, text=True)
+    streams = [line.strip()[:110] for line in result.stderr.splitlines() if "Stream #" in line]
+    return {"has_audio": any("Audio:" in s for s in streams),
+            "mean": _db(result.stderr, "mean_volume"),
+            "max": _db(result.stderr, "max_volume"), "streams": streams}
+
+
+def audible(report: dict[str, Any]) -> bool:
+    return bool(report["has_audio"] and report["mean"] is not None
+                and report["mean"] > MIN_AUDIBLE_DB)
+
+
+def wav_seconds(path: Path) -> float:
+    with wave.open(str(path)) as handle:
+        return handle.getnframes() / handle.getframerate()
+
+
+def media_seconds(path: Path) -> float:
+    """مدة ملف وسائط بالثواني (من مخرج ffmpeg -i)."""
+    result = subprocess.run([ffmpeg_bin(), "-i", str(path)], capture_output=True, text=True)
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
+    if not match:
+        raise VideoError(f"تعذر قراءة مدة {path.name}.")
+    h, m, s = match.groups()
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def write_concat_list(clips: list[Path], list_path: Path) -> Path:
+    list_path.write_text("".join(f"file '{c.resolve().as_posix()}'\n" for c in clips),
+                         encoding="utf-8")
+    return list_path
+
+
+def finalize_video(concat_list: Path, wav: Path, out_mp4: Path, seconds: float) -> dict[str, Any]:
+    """
+    يضم مقاطع الفيديو (concat) مع الصوت: نسخ الفيديو أولًا، ثم إعادة ترميزه إن لم يكن
+    الصوت مسموعًا في الناتج. الصوت: AAC استريو 48 كيلوهرتز بشدة موحدة. يفشل بوضوح
+    بدل أن يعيد فيديو صامتًا.
+    """
+    source = audio_report(wav)
+    if not audible(source):
+        raise VideoError(f"الصوت المولّد صامت تقريبًا (متوسط الشدة {source['mean']} dB).")
+
+    attempts = [
+        ("نسخ الفيديو", ["-c:v", "copy"]),
+        ("إعادة ترميز الفيديو", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                                 "-pix_fmt", "yuv420p"]),
+    ]
+    report: dict[str, Any] = {}
+    for label, video_codec in attempts:
+        out_mp4.unlink(missing_ok=True)
+        _run([ffmpeg_bin(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
+              "-i", str(wav), "-map", "0:v:0", "-map", "1:a:0", *video_codec,
+              "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-af", LOUDNORM,
+              "-t", f"{seconds:.3f}", "-movflags", "+faststart", str(out_mp4)], label)
+        report = audio_report(out_mp4)
+        print(f"الصوت في الفيديو ({label}): متوسط {report['mean']} dB، أعلى {report['max']} dB")
+        if audible(report):
+            return report
+        print(f"::warning title=صوت الفيديو::لا صوت مسموع بعد «{label}»؛ نجرّب طريقة أخرى.")
+    raise VideoError("الفيديو بلا صوت مسموع رغم سلامة الصوت المولّد. المسارات: "
+                     + " | ".join(report.get("streams", [])) + f" | متوسط الشدة {report.get('mean')}")
+
+
 def make_clip(frame: Path, clip_path: Path, seconds: int = CLIP_SECONDS,
-              fps: int = CLIP_FPS) -> None:
-    """تحريك دوري: تكبير بطيء ثم عودة (يبدأ وينتهي بالإطار نفسه) مع انسياب خفيف جدًا."""
+              fps: int = FPS) -> None:
+    """تحريك دوري لإطار واحد: تكبير بطيء ثم عودة (يبدأ وينتهي بالإطار نفسه)."""
     n = seconds * fps
     w, h = VIDEO_SIZE
     zoom = f"1+0.06*(1-cos(2*PI*on/{n}))"
@@ -342,34 +369,68 @@ def make_clip(frame: Path, clip_path: Path, seconds: int = CLIP_SECONDS,
 
 
 def make_video(frame: Path, wav: Path, out_mp4: Path,
-               clip_seconds: int = CLIP_SECONDS) -> None:
-    """يكرّر مقطع التحريك (نسخًا بلا إعادة ترميز) ويركّب عليه الصوت حتى نهاية الصوت."""
-    with wave.open(str(wav)) as handle:
-        audio_seconds = handle.getnframes() / handle.getframerate()
+               clip_seconds: int = CLIP_SECONDS) -> dict[str, Any]:
+    """وضع الإطار الواحد: مقطع دوري يُكرَّر (قائمة concat) حتى نهاية الصوت."""
+    seconds = wav_seconds(wav)
     clip = out_mp4.parent / "clip.mp4"
     make_clip(frame, clip, seconds=clip_seconds)
-    # مهم: -t صريح بمدة الصوت. مع التكرار بالنسخ (-stream_loop + -c copy) لا يوقف
-    # -shortest الفيديو فيستمر بلا نهاية (اختبرنا ذلك: ملف بعشرات الجيجابايت).
-    _run([ffmpeg_bin(), "-y", "-stream_loop", "-1", "-i", str(clip), "-i", str(wav),
-          "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
-          "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "1",
-          "-t", f"{audio_seconds:.3f}", "-movflags", "+faststart", str(out_mp4)],
-         "التركيب")
-    clip.unlink(missing_ok=True)
+    repeats = math.ceil(seconds / clip_seconds) + 1
+    listing = write_concat_list([clip] * repeats, out_mp4.parent / "concat.txt")
+    try:
+        return finalize_video(listing, wav, out_mp4, seconds)
+    finally:
+        clip.unlink(missing_ok=True)
+        listing.unlink(missing_ok=True)
 
 
-def media_seconds(path: Path) -> float:
-    """مدة ملف وسائط بالثواني (من مخرج ffmpeg -i)."""
-    result = subprocess.run([ffmpeg_bin(), "-i", str(path)], capture_output=True, text=True)
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
-    if not match:
-        raise VideoError(f"تعذر قراءة مدة {path.name}.")
-    h, m, s = match.groups()
-    return int(h) * 3600 + int(m) * 60 + float(s)
+def make_scene_clip(image: Path, out: Path, seconds: float, index: int,
+                    fps: int = FPS) -> None:
+    """مقطع مشهد واحد: تكبير أو ابتعاد بطيء مع انسياب جانبي، يظهر ويختفي عبر الأسود."""
+    n = max(2, round(seconds * fps))
+    w, h = VIDEO_SIZE
+    zoom_in = index % 2 == 0
+    zoom = f"1.04+0.10*on/{n}" if zoom_in else f"1.14-0.10*on/{n}"
+    direction = 1 if (index // 2) % 2 == 0 else -1
+    x = f"iw/2-(iw/zoom/2)+(on/{n}-0.5)*iw*0.025*{direction}"
+    y = "ih/2-(ih/zoom/2)"
+    fade = min(0.7, seconds / 4)
+    vf = (f"scale={w * 3}:{h * 3}:flags=lanczos,"
+          f"zoompan=z='{zoom}':x='{x}':y='{y}':d=1:s={w}x{h}:fps={fps},"
+          f"fade=t=in:st=0:d={fade:.2f},fade=t=out:st={max(0.0, seconds - fade):.2f}:d={fade:.2f},"
+          "format=yuv420p")
+    _run([ffmpeg_bin(), "-y", "-loop", "1", "-framerate", str(fps), "-i", str(image),
+          "-vf", vf, "-frames:v", str(n), "-c:v", "libx264", "-preset", "veryfast",
+          "-crf", "23", "-g", str(fps * 2), "-r", str(fps), str(out)], f"مشهد {index + 1}")
+
+
+def make_slideshow(segments: list[dict[str, Any]], wav: Path, out_mp4: Path) -> dict[str, Any]:
+    """
+    segments: [{"image": Path, "seconds": float}] بترتيب القصة. تُحوَّل المشاهد إلى مقاطع
+    بالتوازي، وتُضم بالنسخ، ثم يُركَّب الصوت. يمدّ آخر مقطع ثانية إضافية لتغطية الذيل.
+    """
+    seconds = wav_seconds(wav)
+    folder = out_mp4.parent / "scene_clips"
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    jobs = []
+    for index, segment in enumerate(segments):
+        extra = 1.0 if index == len(segments) - 1 else 0.0
+        jobs.append((segment["image"], folder / f"clip_{index:02d}.mp4",
+                     segment["seconds"] + extra, index))
+    workers = max(1, min(len(jobs), os.cpu_count() or 2))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in [pool.submit(make_scene_clip, *job) for job in jobs]:
+            future.result()
+    listing = write_concat_list([job[1] for job in jobs], out_mp4.parent / "concat.txt")
+    try:
+        return finalize_video(listing, wav, out_mp4, seconds)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+        listing.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# 4) الاستضافة والنشر
+# 3) الاستضافة والنشر
 # ---------------------------------------------------------------------------
 
 def _gh(args: list[str]) -> str:
@@ -504,7 +565,7 @@ def wait_for_video(channel_id: str, title: str, since: datetime,
 
 
 # ---------------------------------------------------------------------------
-# 5) روابط الفيديو داخل القصة
+# 4) روابط الفيديو داخل القصة
 # ---------------------------------------------------------------------------
 
 def insert_video_links(markdown: str, url: str) -> str:
@@ -578,6 +639,39 @@ def build_tags(result: dict[str, Any]) -> list[str]:
     return tags
 
 
+def build_visuals(result: dict[str, Any], markdown: str, info: dict[str, Any],
+                  work_dir: Path, audio_seconds: float) -> list[dict[str, Any]]:
+    """
+    مقاطع الصور بحسب لوحة المشاهد: [{"image", "seconds"}]. تعيد قائمة فارغة إن لم توجد
+    لوحة أو فشل توليد صور كافية (فيرجع الفيديو إلى إطار الغلاف الواحد).
+    """
+    board = result.get("storyboard")
+    if not story_scenes.scenes_enabled() or not isinstance(board, dict) or not board.get("scenes"):
+        print("لا لوحة مشاهد؛ يُستعمل إطار الغلاف وحده.")
+        return []
+    print(f"توليد صور المشاهد ({len(board['scenes'])})...")
+    try:
+        rows = story_scenes.generate_scene_images(board, str(result.get("category")), work_dir)
+    except Exception as exc:  # noqa: BLE001 - الصور إضافة: نرجع إلى الإطار الواحد
+        print(f"::warning title=صور المشاهد::{type(exc).__name__}: {exc}")
+        return []
+    generated = sum(1 for r in rows if r["generated"])
+    if generated < 2:
+        print("::warning title=صور المشاهد::لم تنجح إلا صورة أو أقل؛ يُستعمل إطار الغلاف.")
+        return []
+
+    paragraphs = story_paragraphs(markdown)
+    starts = story_scenes.paragraph_start_times(
+        paragraphs, str(result.get("title") or ""), info["chunk_texts"],
+        info["chunk_seconds"], PAUSE_SECONDS)
+    segments = story_scenes.scene_segments(board["scenes"], starts, audio_seconds)
+    visuals = [{"image": rows[s["scene"]]["path"], "seconds": s["seconds"]} for s in segments]
+    print(f"مشاهد الفيديو: {len(visuals)} (مولّدة {generated} من {len(rows)}) | "
+          "مدد (ث): " + ", ".join(f"{v['seconds']:.0f}" for v in visuals))
+    info["scenes"] = {"total": len(rows), "generated": generated, "shown": len(visuals)}
+    return visuals
+
+
 def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
     mode = video_mode()
     if mode == "off":
@@ -602,10 +696,15 @@ def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
     wav, mp4 = video_dir / "narration.wav", video_dir / f"story-{out_dir.name}.mp4"
 
     info = synthesize(text, wav, title=str(result.get("title") or ""))
-    make_video(frame, wav, mp4, clip_seconds=_env_int("STORY_CLIP_SECONDS", CLIP_SECONDS, 4, 600))
+    visuals = build_visuals(result, markdown, info, work_dir, info["seconds"])
+    if visuals:
+        report = make_slideshow(visuals, wav, mp4)
+    else:
+        report = make_video(frame, wav, mp4,
+                            clip_seconds=_env_int("STORY_CLIP_SECONDS", CLIP_SECONDS, 4, 600))
     video_seconds, audio_seconds = media_seconds(mp4), info["seconds"]
     print(f"الفيديو: {mp4.name} ({mp4.stat().st_size / 1e6:.1f} ميجا، "
-          f"{video_seconds / 60:.1f} دقيقة)")
+          f"{video_seconds / 60:.1f} دقيقة) | المسارات: " + " | ".join(report["streams"]))
     if abs(video_seconds - audio_seconds) > 5:
         raise VideoError(f"مدة الفيديو ({video_seconds:.0f}ث) لا تطابق الصوت ({audio_seconds:.0f}ث).")
 
@@ -615,7 +714,8 @@ def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
     wav.unlink(missing_ok=True)
 
     details = {"mode": mode, "minutes": round(video_seconds / 60, 1),
-               "mb": round(mp4.stat().st_size / 1e6, 1)}
+               "mb": round(mp4.stat().st_size / 1e6, 1), "audio_mean_db": report["mean"],
+               "scenes": info.get("scenes")}
     if mode == "local":
         print(f"الوضع local: الفيديو في {video_dir} (يُرفع كـ artifact للفحص فقط).")
         return details
