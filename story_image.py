@@ -71,10 +71,9 @@ def procedural_background(size: tuple[int, int], accent: tuple[int, int, int]) -
 
 
 def _prompts(story: dict[str, Any], info: dict[str, Any]) -> tuple[str, str]:
-    scene = (story.get("image_prompt") or "").strip()
-    if not scene:
-        scene = info["safe_image"]
-    return scene + STYLE_SUFFIX, info["safe_image"] + STYLE_SUFFIX
+    scene = (story.get("image_prompt") or "").strip() or info["safe_image"]
+    safe = (story.get("image_safe_prompt") or "").strip() or info["safe_image"]
+    return scene + STYLE_SUFFIX, safe + STYLE_SUFFIX
 
 
 def generate_base(
