@@ -21,6 +21,7 @@ from typing import Any
 import related
 import story_categories
 import story_image
+import story_scenes
 import story_writer
 from story_writer import StoryError
 
@@ -94,6 +95,19 @@ def run() -> Path:
     print(f"العنوان: {story['title']}")
     print(f"الكلمات: {story['stats']['words']} | الكاتب: {story['writer']['model']}")
 
+    # لوحة مشاهد من أحداث القصة نفسها: تعطي وصفًا خاصًا بالغلاف، وتُستعمل صور مشاهدها في الفيديو.
+    # فشلها لا يمنع القصة: يُستعمل وصف الصورة العام الذي كتبه كاتب القصة.
+    storyboard = None
+    if story_scenes.scenes_enabled():
+        try:
+            storyboard = story_scenes.make_storyboard(
+                story["title"], story["article"], category)
+            story["image_prompt"] = storyboard["cover_prompt"]
+            story["image_safe_prompt"] = storyboard["cover_safe_prompt"]
+            print(f"لوحة المشاهد: {len(storyboard['scenes'])} مشاهد.")
+        except Exception as exc:  # noqa: BLE001 - اللوحة إضافة، لا توقف إنتاج القصة
+            print(f"::warning title=لوحة المشاهد::{type(exc).__name__}: {exc}")
+
     rel = related.published_articles(category=category, kind="story")
     story["article"], story["related_used"] = story_writer.append_related(
         story["article"], rel)
@@ -141,6 +155,7 @@ def run() -> Path:
         "image_text": story["image_title"],
         "image_highlight": story["image_highlight"],
         "image_prompt": story["image_prompt"],
+        "storyboard": storyboard,
         "image_note": images["generation"].get("reason", ""),
     }
     (out_dir / "result.json").write_text(
