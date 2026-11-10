@@ -1,4 +1,4 @@
-name: Story Factory!
+name: Story Factory2
 
 on:
   schedule:
@@ -247,6 +247,11 @@ jobs:
           STORY_TTS_CHUNK_WORDS: ${{ vars.STORY_TTS_CHUNK_WORDS }}
           STORY_VIDEO_WAIT_MINUTES: ${{ vars.STORY_VIDEO_WAIT_MINUTES }}
           STORY_BLOG_URL: ${{ vars.STORY_BLOG_URL }}
+          STORY_MUSIC: ${{ vars.STORY_MUSIC }}
+          STORY_MUSIC_DIR: ${{ vars.STORY_MUSIC_DIR }}
+          STORY_MUSIC_FILE: ${{ vars.STORY_MUSIC_FILE }}
+          STORY_MUSIC_VOLUME: ${{ vars.STORY_MUSIC_VOLUME }}
+          STORY_ZOOM_PERCENT: ${{ vars.STORY_ZOOM_PERCENT }}
           STORY_SAFETY_THRESHOLD: ${{ vars.STORY_SAFETY_THRESHOLD }}
           PYTHONUNBUFFERED: "1"
         run: python story_video.py
