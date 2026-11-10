@@ -29,3 +29,20 @@ BLOGGER_API_KEY
 من Credentials ← Create credentials ← API key، وانسخ المفتاح.
 يُفضّل تقييده: Restrict key ← API restrictions ← Blogger API v3.
 أضفه في GitHub سرًّا باسم BLOGGER_API_KEY.
+
+
+
+
+
+
+
+سيناريو ثانٍ مستقل عن سيناريو Blogger، ولا تضف إليه شيئًا من الأول. أسماء الوحدات من معرفتي بـMake ولا أرى واجهتك، فتحقق منها:
+
+Webhooks ← Custom webhook: انسخ رابطه إلى السر MAKE_VIDEO_WEBHOOK_URL. ثم شغّل Run once وأرسل طلبًا تجريبيًا ليتعرف على الحقول.
+تنزيل الملف من الرابط: وحدة HTTP ← Get a file بالرابط video_url (أو أي طريقة عندك تقبل رابطًا).
+YouTube ← Upload a Video:
+عند Connection اضغط Add وسجّل الدخول بحساب Google الذي يملك القناة.
+اربط الحقول: Title بـtitle، وDescription بـdescription، وTags بـtags، وPrivacy بـprivacy (وقيمتها public)، وملف الفيديو من الوحدة السابقة.
+لا تضف Webhook response. سيرد Make فورًا بكلمة «Accepted»، وسكربتي يراقب قناتك بعدها بنفسه (المهلة 20 دقيقة).
+
+لتجهيز المراقبة أضف في GitHub متغيرًا باسم YOUTUBE_CHANNEL_ID برقم قناتك (يبدأ بـUC، وتجده في YouTube Studio ثم Settings ثم Channel ثم Advanced settings).
