@@ -46,3 +46,8 @@ YouTube ← Upload a Video:
 لا تضف Webhook response. سيرد Make فورًا بكلمة «Accepted»، وسكربتي يراقب قناتك بعدها بنفسه (المهلة 20 دقيقة).
 
 لتجهيز المراقبة أضف في GitHub متغيرًا باسم YOUTUBE_CHANNEL_ID برقم قناتك (يبدأ بـUC، وتجده في YouTube Studio ثم Settings ثم Channel ثم Advanced settings).
+
+
+
+
+music/README.txt
