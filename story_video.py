@@ -7,7 +7,9 @@
   2) صور المشاهد: لكل مشهد من لوحة المشاهد (result.json -> storyboard) صورة 16:9 تظهر في
      الوقت الذي تُروى فيه أحداثه، بتكبير/انسياب بطيء وانتقال عبر الأسود. وإن لم توجد لوحة
      أو فشل توليد الصور يُستعمل إطار الغلاف وحده بتحريك دوري.
-  3) الدمج بـ ffmpeg (مقاطع تُضم بالنسخ + الصوت مع ضبط الشدة)، ثم التحقق من أن الصوت
+  3) موسيقى خلفية اختيارية من مجلد music/ (تُكرَّر إن كانت أقصر من الفيديو وتُخفَّض إلى
+     STORY_MUSIC_VOLUME في المئة، افتراضيًا 12) تُدمج مع الصوت المروي.
+     الدمج بـ ffmpeg (مقاطع تُضم بالنسخ + الصوت مع ضبط الشدة)، ثم التحقق من أن الصوت
      موجود ومسموع في الملف النهائي؛ وإن لم يكن يُعاد الدمج بإعادة الترميز، وإن فشل يفشل
      الإنتاج برسالة واضحة بدل نشر فيديو صامت.
   4) رفع story.mp4 إلى GitHub Releases (رابط عام) فيُرسَل الرابط إلى Make لا الملف.
@@ -43,6 +45,7 @@ from typing import Any
 
 import requests
 
+import story_categories
 import story_scenes
 from story_text import (  # clean_story_text و split_chunks متاحتان أيضًا من هذه الوحدة
     RELATED_MARK,
@@ -77,6 +80,9 @@ FPS = 15
 VIDEO_SIZE = (1280, 720)
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"   # شدة صوت موحدة مناسبة ليوتيوب
 MIN_AUDIBLE_DB = -55.0                         # أقل متوسط شدة نعدّه مسموعًا
+MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".opus"}
+DEFAULT_MUSIC_PERCENT = 12                     # شدة الموسيقى قياسًا بالصوت المروي (10 إلى 15 مناسبة)
+DEFAULT_ZOOM_PERCENT = 10                      # مقدار تكبير الصورة خلال المشهد
 
 
 class VideoError(Exception):
@@ -315,22 +321,75 @@ def media_seconds(path: Path) -> float:
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
+def zoom_amount() -> float:
+    """مقدار التكبير في المشهد (كسر): STORY_ZOOM_PERCENT بين 2 و30، الافتراضي 10."""
+    return _env_int("STORY_ZOOM_PERCENT", DEFAULT_ZOOM_PERCENT, 2, 30) / 100
+
+
+def music_gain() -> float:
+    """معامل شدة الموسيقى: STORY_MUSIC_VOLUME بالمئة بين 2 و40، الافتراضي 12."""
+    return _env_int("STORY_MUSIC_VOLUME", DEFAULT_MUSIC_PERCENT, 2, 40) / 100
+
+
+def _playable(path: Path) -> bool:
+    try:
+        return media_seconds(path) > 1.0
+    except VideoError:
+        return False
+
+
+def pick_music(output_root: Path) -> Path | None:
+    """
+    موسيقى القصة من مجلد music/ (STORY_MUSIC_DIR): ملف محدد بـ STORY_MUSIC_FILE، وإلا
+    تناوب بين الملفات الصالحة بحسب عدد القصص السابقة فتتنوع الخلفية. STORY_MUSIC=off تعطّلها.
+    """
+    if os.getenv("STORY_MUSIC", "").strip().lower() in {"off", "0", "false", "no", "none"}:
+        return None
+    folder = Path(os.getenv("STORY_MUSIC_DIR", "").strip() or "music")
+    chosen = os.getenv("STORY_MUSIC_FILE", "").strip()
+    if chosen:
+        for candidate in (Path(chosen), folder / chosen):
+            if candidate.is_file() and _playable(candidate):
+                return candidate
+        print(f"::warning title=الموسيقى::الملف STORY_MUSIC_FILE={chosen} غير موجود أو غير صالح.")
+        return None
+    files = []
+    if folder.is_dir():
+        files = [f for f in sorted(folder.iterdir())
+                 if f.suffix.lower() in MUSIC_EXTENSIONS and _playable(f)]
+    if not files:
+        print(f"لا موسيقى خلفية (ضع ملفات mp3/wav في المجلد {folder}/ لتفعيلها).")
+        return None
+    done = len(story_categories.load_story_results(output_root))
+    return files[done % len(files)]
+
+
 def write_concat_list(clips: list[Path], list_path: Path) -> Path:
     list_path.write_text("".join(f"file '{c.resolve().as_posix()}'\n" for c in clips),
                          encoding="utf-8")
     return list_path
 
 
-def finalize_video(concat_list: Path, wav: Path, out_mp4: Path, seconds: float) -> dict[str, Any]:
+def _audio_graph(seconds: float, music: Path | None, gain: float) -> str:
     """
-    يضم مقاطع الفيديو (concat) مع الصوت: نسخ الفيديو أولًا، ثم إعادة ترميزه إن لم يكن
-    الصوت مسموعًا في الناتج. الصوت: AAC استريو 48 كيلوهرتز بشدة موحدة. يفشل بوضوح
-    بدل أن يعيد فيديو صامتًا.
+    مخطط الصوت: الصوت المروي بشدة موحدة (استريو). مع الموسيقى: تُضبط شدتها أيضًا ثم تُضرب
+    بـ gain (مثل 0.12) فتبقى في الخلفية، وتظهر تدريجيًا وتختفي تدريجيًا، ثم تُمزج وتُحمى
+    من التشبّع. تُكرَّر الموسيقى القصيرة بـ -stream_loop عند الإدخال.
     """
-    source = audio_report(wav)
-    if not audible(source):
-        raise VideoError(f"الصوت المولّد صامت تقريبًا (متوسط الشدة {source['mean']} dB).")
+    voice = f"[1:a]{LOUDNORM},aformat=channel_layouts=stereo[v]"
+    if music is None:
+        return f"{voice};[v]anull[a]"
+    fade_out_at = max(0.0, seconds - 4.0)
+    return (f"{voice};"
+            f"[2:a]{LOUDNORM},aformat=channel_layouts=stereo,volume={gain:.3f},"
+            f"afade=t=in:st=0:d=2,afade=t=out:st={fade_out_at:.2f}:d=4[m];"
+            "[v][m]amix=inputs=2:duration=first:dropout_transition=0,volume=2,"
+            "alimiter=limit=0.95[a]")
 
+
+def _mux(concat_list: Path, wav: Path, out_mp4: Path, seconds: float,
+         music: Path | None, gain: float) -> dict[str, Any]:
+    """نسخ الفيديو أولًا ثم إعادة ترميزه إن لم يكن الصوت مسموعًا في الناتج."""
     attempts = [
         ("نسخ الفيديو", ["-c:v", "copy"]),
         ("إعادة ترميز الفيديو", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -339,10 +398,15 @@ def finalize_video(concat_list: Path, wav: Path, out_mp4: Path, seconds: float) 
     report: dict[str, Any] = {}
     for label, video_codec in attempts:
         out_mp4.unlink(missing_ok=True)
-        _run([ffmpeg_bin(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-              "-i", str(wav), "-map", "0:v:0", "-map", "1:a:0", *video_codec,
-              "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-af", LOUDNORM,
-              "-t", f"{seconds:.3f}", "-movflags", "+faststart", str(out_mp4)], label)
+        cmd = [ffmpeg_bin(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
+               "-i", str(wav)]
+        if music is not None:
+            cmd += ["-stream_loop", "-1", "-i", str(music)]
+        cmd += ["-filter_complex", _audio_graph(seconds, music, gain),
+                "-map", "0:v:0", "-map", "[a]", *video_codec,
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                "-t", f"{seconds:.3f}", "-movflags", "+faststart", str(out_mp4)]
+        _run(cmd, label)
         report = audio_report(out_mp4)
         print(f"الصوت في الفيديو ({label}): متوسط {report['mean']} dB، أعلى {report['max']} dB")
         if audible(report):
@@ -352,12 +416,40 @@ def finalize_video(concat_list: Path, wav: Path, out_mp4: Path, seconds: float) 
                      + " | ".join(report.get("streams", [])) + f" | متوسط الشدة {report.get('mean')}")
 
 
+def finalize_video(concat_list: Path, wav: Path, out_mp4: Path, seconds: float,
+                   music: Path | None = None, gain: float | None = None) -> dict[str, Any]:
+    """
+    يضم مقاطع الفيديو (concat) مع الصوت المروي وموسيقى الخلفية الاختيارية. الصوت: AAC
+    استريو 48 كيلوهرتز بشدة موحدة. يتحقق أن الصوت مسموع، ويفشل بوضوح بدل أن يعيد فيديو
+    صامتًا. وإن تعذر دمج الموسيقى (ملف تالف مثلًا) يُدمج الصوت المروي وحده.
+    """
+    source = audio_report(wav)
+    if not audible(source):
+        raise VideoError(f"الصوت المولّد صامت تقريبًا (متوسط الشدة {source['mean']} dB).")
+    gain = music_gain() if gain is None else gain
+
+    for use_music in ([music, None] if music is not None else [None]):
+        try:
+            report = _mux(concat_list, wav, out_mp4, seconds, use_music, gain)
+        except VideoError as exc:
+            if use_music is None:
+                raise
+            print(f"::warning title=الموسيقى::تعذر دمج الموسيقى ({str(exc)[:160]})؛ "
+                  "يُدمج الصوت المروي وحده.")
+            continue
+        report["music"] = use_music.name if use_music is not None else None
+        if use_music is not None:
+            print(f"الموسيقى: {use_music.name} بشدة {gain:.0%} من الصوت المروي (تُكرَّر تلقائيًا).")
+        return report
+    raise VideoError("تعذر دمج الصوت.")
+
+
 def make_clip(frame: Path, clip_path: Path, seconds: int = CLIP_SECONDS,
               fps: int = FPS) -> None:
     """تحريك دوري لإطار واحد: تكبير بطيء ثم عودة (يبدأ وينتهي بالإطار نفسه)."""
     n = seconds * fps
     w, h = VIDEO_SIZE
-    zoom = f"1+0.06*(1-cos(2*PI*on/{n}))"
+    zoom = f"1+{zoom_amount() * 0.6:.3f}*(1-cos(2*PI*on/{n}))"
     x = f"iw/2-(iw/zoom/2)+sin(2*PI*on/{n})*iw*0.010"
     y = f"ih/2-(ih/zoom/2)+(cos(2*PI*on/{n})-1)*ih*0.008"
     vf = (f"scale={w * 3}:{h * 3}:flags=lanczos,"
@@ -369,7 +461,7 @@ def make_clip(frame: Path, clip_path: Path, seconds: int = CLIP_SECONDS,
 
 
 def make_video(frame: Path, wav: Path, out_mp4: Path,
-               clip_seconds: int = CLIP_SECONDS) -> dict[str, Any]:
+               clip_seconds: int = CLIP_SECONDS, music: Path | None = None) -> dict[str, Any]:
     """وضع الإطار الواحد: مقطع دوري يُكرَّر (قائمة concat) حتى نهاية الصوت."""
     seconds = wav_seconds(wav)
     clip = out_mp4.parent / "clip.mp4"
@@ -377,7 +469,7 @@ def make_video(frame: Path, wav: Path, out_mp4: Path,
     repeats = math.ceil(seconds / clip_seconds) + 1
     listing = write_concat_list([clip] * repeats, out_mp4.parent / "concat.txt")
     try:
-        return finalize_video(listing, wav, out_mp4, seconds)
+        return finalize_video(listing, wav, out_mp4, seconds, music)
     finally:
         clip.unlink(missing_ok=True)
         listing.unlink(missing_ok=True)
@@ -389,7 +481,9 @@ def make_scene_clip(image: Path, out: Path, seconds: float, index: int,
     n = max(2, round(seconds * fps))
     w, h = VIDEO_SIZE
     zoom_in = index % 2 == 0
-    zoom = f"1.04+0.10*on/{n}" if zoom_in else f"1.14-0.10*on/{n}"
+    amount = zoom_amount()
+    zoom = (f"1.04+{amount:.3f}*on/{n}" if zoom_in
+            else f"{1.04 + amount:.3f}-{amount:.3f}*on/{n}")
     direction = 1 if (index // 2) % 2 == 0 else -1
     x = f"iw/2-(iw/zoom/2)+(on/{n}-0.5)*iw*0.025*{direction}"
     y = "ih/2-(ih/zoom/2)"
@@ -403,7 +497,8 @@ def make_scene_clip(image: Path, out: Path, seconds: float, index: int,
           "-crf", "23", "-g", str(fps * 2), "-r", str(fps), str(out)], f"مشهد {index + 1}")
 
 
-def make_slideshow(segments: list[dict[str, Any]], wav: Path, out_mp4: Path) -> dict[str, Any]:
+def make_slideshow(segments: list[dict[str, Any]], wav: Path, out_mp4: Path,
+                   music: Path | None = None) -> dict[str, Any]:
     """
     segments: [{"image": Path, "seconds": float}] بترتيب القصة. تُحوَّل المشاهد إلى مقاطع
     بالتوازي، وتُضم بالنسخ، ثم يُركَّب الصوت. يمدّ آخر مقطع ثانية إضافية لتغطية الذيل.
@@ -423,7 +518,7 @@ def make_slideshow(segments: list[dict[str, Any]], wav: Path, out_mp4: Path) -> 
             future.result()
     listing = write_concat_list([job[1] for job in jobs], out_mp4.parent / "concat.txt")
     try:
-        return finalize_video(listing, wav, out_mp4, seconds)
+        return finalize_video(listing, wav, out_mp4, seconds, music)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
         listing.unlink(missing_ok=True)
@@ -697,11 +792,13 @@ def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
 
     info = synthesize(text, wav, title=str(result.get("title") or ""))
     visuals = build_visuals(result, markdown, info, work_dir, info["seconds"])
+    music = pick_music(out_dir.parent)
     if visuals:
-        report = make_slideshow(visuals, wav, mp4)
+        report = make_slideshow(visuals, wav, mp4, music)
     else:
         report = make_video(frame, wav, mp4,
-                            clip_seconds=_env_int("STORY_CLIP_SECONDS", CLIP_SECONDS, 4, 600))
+                            clip_seconds=_env_int("STORY_CLIP_SECONDS", CLIP_SECONDS, 4, 600),
+                            music=music)
     video_seconds, audio_seconds = media_seconds(mp4), info["seconds"]
     print(f"الفيديو: {mp4.name} ({mp4.stat().st_size / 1e6:.1f} ميجا، "
           f"{video_seconds / 60:.1f} دقيقة) | المسارات: " + " | ".join(report["streams"]))
@@ -715,7 +812,7 @@ def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
 
     details = {"mode": mode, "minutes": round(video_seconds / 60, 1),
                "mb": round(mp4.stat().st_size / 1e6, 1), "audio_mean_db": report["mean"],
-               "scenes": info.get("scenes")}
+               "music": report.get("music"), "scenes": info.get("scenes")}
     if mode == "local":
         print(f"الوضع local: الفيديو في {video_dir} (يُرفع كـ artifact للفحص فقط).")
         return details
