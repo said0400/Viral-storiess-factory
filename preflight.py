@@ -90,6 +90,14 @@ def main(root: Path | None = None) -> int:
     if not ok:
         critical.append("الملف prompts/story_style.txt غير موجود أو فارغ (برومبت القصص)")
 
+    music_dir = root / "music"
+    tracks = [f.name for f in music_dir.glob("*")
+              if f.suffix.lower() in {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".opus"}] \
+        if music_dir.is_dir() else []
+    print(f"  {'OK     ' if tracks else 'تنبيه '} music/ ({len(tracks)} ملف موسيقى)")
+    if not tracks:
+        warnings.append("لا ملفات موسيقى في المجلد music/ (فيديو القصة بلا موسيقى خلفية)")
+
     print("== 2) المكتبات ==")
     for module, (is_critical, pip_name) in THIRD_PARTY.items():
         try:
