@@ -42,6 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -718,7 +719,8 @@ def build_description(result: dict[str, Any]) -> str:
              " ".join(result.get("hashtags") or [])]
     blog = os.getenv("STORY_BLOG_URL", "").strip().rstrip("/")
     if blog:
-        parts.append(f"اقرأ القصص مكتوبة على مدونتنا: {blog}/search/label/قصص")
+        label = quote(story_categories.PARENT_LABEL)
+        parts.append(f"اقرأ القصص مكتوبة على مدونتنا: {blog}/search/label/{label}")
     return "\n\n".join(p for p in parts if p)[:4500]
 
 
@@ -726,7 +728,7 @@ def build_tags(result: dict[str, Any]) -> list[str]:
     seo = result.get("seo") if isinstance(result.get("seo"), dict) else {}
     tags, total = [], 0
     for tag in [*(seo.get("keywords") or []), "قصص", "قصة مسموعة",
-                str(result.get("category") or "")]:
+                story_categories.PARENT_LABEL, str(result.get("category") or "")]:
         tag = str(tag).strip()
         if tag and tag not in tags and total + len(tag) < 450:
             tags.append(tag)
