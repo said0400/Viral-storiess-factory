@@ -20,7 +20,7 @@ from pathlib import Path
 
 # الملف: ما يجب أن يوفّره (أسماء تكشف الإصدار القديم من الجديد)
 EXPECTED: dict[str, list[str]] = {
-    "categories": ["CATEGORIES", "DEFAULT_CATEGORY"],
+    "categories": ["CATEGORIES", "DEFAULT_CATEGORY", "labels_for"],
     "grok": ["analyze_images", "_images_for_attempt", "fallback_plan", "default_gallery"],
     "gemini": ["analyze_images", "_generate"],
     "cloudflare_ai": ["generate_image", "CloudflareQuotaError", "CloudflareFlaggedError",
@@ -35,8 +35,9 @@ EXPECTED: dict[str, list[str]] = {
     "main": ["main", "StoryRejected", "output_folder_for", "extract_article"],
     "picker": ["pick_story", "rank_items", "collect_items"],
     "run_factory": ["run"],
-    "make_publish": ["publish", "fill_first_comment", "DEFAULT_LABEL"],
-    "story_categories": ["STORY_CATEGORIES", "next_category", "load_story_results"],
+    "make_publish": ["publish", "fill_first_comment", "labels_for"],
+    "story_categories": ["STORY_CATEGORIES", "next_category", "load_story_results",
+                         "canonical_category", "labels_for"],
     "story_writer": ["write_story", "load_history", "append_related"],
     "story_image": ["build_story_images"],
     "story_factory": ["main", "run"],
