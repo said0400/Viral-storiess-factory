@@ -4,7 +4,9 @@
 - التصنيف يفرضه الكود (دوران بين أربعة تصنيفات)، لا النموذج.
 - منع التكرار: يُمرَّر للنموذج سجل آخر القصص (الفكرة والصراع والمفاجأة والنهاية)،
   ثم يفحص الكود تشابه الفكرة والمفاجأة مع السجل ويعيد المحاولة مرة عند التشابه.
-- الطول: إن جاءت القصة أقصر من STORY_MIN_WORDS (الافتراضي 1300) تُعاد كتابتها مرة.
+- الطول: إن جاءت القصة أقصر من STORY_MIN_WORDS (الافتراضي 1300) تُرسل للنموذج ليوسّعها
+  (حتى مرتين: نفس الحبكة والمفاجأة والنهاية بمشاهد وحوارات أكثر)، فإن لم تكفِ تُكتب قصة
+  جديدة (حتى STORY_MAX_ATTEMPTS محاولات كاملة، الافتراضي 3). الفشل بعد استنفادها فقط.
 - لا احتياط من Groq: إن فشل Gemini لا تُنشر قصة ضعيفة، وتعيد المحاولة دورة cron التالية.
 - إعدادات أمان Gemini مخففة (BLOCK_ONLY_HIGH) كي لا تُحجب القصص المظلمة بلا داعٍ؛
   وتُغيَّر من STORY_SAFETY_THRESHOLD (مثل BLOCK_NONE).
@@ -37,6 +39,8 @@ ATTEMPTS = 5                    # لكل نموذج: يتحمل ازدحام Gem
 PARSE_RETRIES = 2               # إعادة التوليد إن لم يكن الرد JSON صالحًا
 SIMILARITY_LIMIT = 0.45         # تشابه الفكرة أو المفاجأة (Jaccard) الذي يعدّ تكرارًا
 DEFAULT_MIN_WORDS = 1300
+DEFAULT_MAX_ATTEMPTS = 3        # محاولات كتابة كاملة للقصة الواحدة
+MAX_EXPANSIONS = 2              # توسيعات لقصة قصيرة قبل الاستسلام لقصة جديدة
 
 LOG_KEYS = ("idea", "conflict", "characters", "setting", "opening", "twist", "ending")
 
@@ -445,22 +449,77 @@ def _write_once(system: str, user: str, category: str) -> tuple[dict[str, Any], 
     raise StoryError(f"تعذر الحصول على قصة صالحة: {last}")
 
 
+EXPAND_SYSTEM = """
+أنت روائي ومحرر محترف. تتلقى قصة جاءت أقصر من المطلوب، وعليك توسيعها إلى قصة كاملة
+من {LOW} إلى {HIGH} كلمة.
+
+القواعد:
+- احتفظ بالأحداث الرئيسية وترتيبها وبالشخصيات والمفاجأة الرئيسية والنهاية كما هي، ولا تغيّر الفكرة.
+- وسّع بمشاهد وحوارات وتفاصيل حسية (أصوات وإضاءة وروائح وطقس) وصراع داخلي وتصاعد في التوتر
+  وإشارات صغيرة تمهّد للمفاجأة، وبإبطاء اللحظات المهمة. لا حشو ولا تكرار ولا تلخيص لما سبق.
+- اكتب القصة كاملة من أولها إلى آخرها، لا الإضافات وحدها.
+- الفقرات قصيرة، ويمكن استعمال عناوين فرعية بصيغة ## (حتى 6)، وبلا العنوان الرئيسي ولا روابط.
+- الفصحى المبسطة نفسها وأسلوب القصة نفسه.
+- أعد JSON صالحًا فقط: {"article": "القصة الموسّعة كاملة بصيغة Markdown"}
+""".strip()
+
+
+def _expand_article(article: str, category: str, min_words: int) -> str | None:
+    """
+    يطلب من النموذج توسيع قصة قصيرة مع بقاء حبكتها. يعيد النص الموسّع، أو None إن لم يزد
+    طوله بوضوح (فلا يُستبدل النص الأصلي بما هو أسوأ).
+    """
+    current = word_count(article)
+    low = max(min_words + 200, 1500)
+    system = EXPAND_SYSTEM.replace("{LOW}", str(low)).replace("{HIGH}", str(low + 600))
+    user = (f"التصنيف: {category}\nالطول الحالي: {current} كلمة؛ المطلوب من {low} إلى "
+            f"{low + 600} كلمة.\n\nالقصة الحالية:\n<story>\n{article}\n</story>\n\n"
+            "أعد JSON فقط.")
+    text, _ = _call_gemini(system, user, temperature=0.8)
+    raw = grok._extract_json(text)
+    bigger = _URL.sub("", str(raw.get("article") or "")).strip()
+    bigger = re.sub(r"^\s*#\s+[^\n]*\n+", "", bigger, count=1)
+    if word_count(bigger) < current * 1.1:
+        return None
+    return bigger
+
+
 def write_story(
     category: str,
     history: list[dict[str, str]],
     rng: random.Random | None = None,
 ) -> dict[str, Any]:
     """
-    يكتب قصة كاملة للتصنيف المحدد. جولتان على الأكثر: الثانية فقط إن كانت الأولى قصيرة
-    أو متشابهة مع السجل، وتُختار الأفضل منهما.
+    يكتب قصة كاملة للتصنيف المحدد، ولا يفشل لمجرد أن أول محاولة جاءت قصيرة:
+      - قصة قصيرة: توسَّع (حتى MAX_EXPANSIONS مرة) بدل رفضها.
+      - قصة متشابهة مع السجل، أو ما زالت قصيرة بعد التوسيع: تُكتب قصة جديدة،
+        حتى STORY_MAX_ATTEMPTS محاولات (الافتراضي 3).
+    وتُختار الأفضل بين المحاولات. يفشل فقط إن بقيت أقصر من 75% من الحد الأدنى بعد كل ذلك.
     """
     min_words = _env_int("STORY_MIN_WORDS", DEFAULT_MIN_WORDS, 300, 3000)
+    max_attempts = _env_int("STORY_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, 1, 6)
     system = build_system(category, history)
     extra = ""
     best: tuple[tuple, dict[str, Any]] | None = None
 
-    for round_no in (1, 2):
+    for attempt in range(1, max_attempts + 1):
         data, model = _write_once(system, build_user(rng, extra), category)
+
+        expansions = 0
+        while word_count(data["article"]) < min_words and expansions < MAX_EXPANSIONS:
+            expansions += 1
+            before = word_count(data["article"])
+            try:
+                bigger = _expand_article(data["article"], category, min_words)
+            except (StoryError, GrokError, ValueError, KeyError, TypeError) as exc:
+                print(f"تحذير: تعذر توسيع القصة القصيرة ({exc}).")
+                break
+            if bigger is None:
+                print(f"تحذير: لم يزد التوسيع الطول بوضوح ({before} كلمة).")
+                continue
+            data["article"] = bigger
+            print(f"تم توسيع القصة القصيرة: {before} ← {word_count(bigger)} كلمة.")
+
         words = word_count(data["article"])
         problems: list[str] = []
         if words < min_words:
@@ -472,7 +531,8 @@ def write_story(
                 f"تشابه ({score:.0%}) مع القصة السابقة «{old['title']}» "
                 f"(فكرة: {old['idea'][:120]} | مفاجأة: {old['twist'][:120]})")
 
-        data["writer"] = {"provider": "gemini", "model": model, "attempts": round_no}
+        data["writer"] = {"provider": "gemini", "model": model, "attempts": attempt,
+                          "expansions": expansions}
         data["stats"] = {"words": words,
                          "reading_minutes": max(1, round(words / 180)),
                          "min_words": min_words}
@@ -486,12 +546,14 @@ def write_story(
 
         print("تنبيه: " + " | ".join(problems) + "؛ إعادة كتابة.")
         extra = ("\n\nالنسخة السابقة لم تقبل للأسباب التالية، فاكتب قصة جديدة مختلفة "
-                 "كليًا ولا تكرر الأخطاء: " + " | ".join(problems))
+                 "كليًا، طويلة كاملة من 1700 إلى 2200 كلمة، ولا تكرر الأخطاء: "
+                 + " | ".join(problems))
 
     assert best is not None
     final = best[1]
     if final["stats"]["words"] < int(min_words * 0.75):
         raise StoryError(
-            f"القصة أقصر من المقبول ({final['stats']['words']} كلمة، "
-            f"الحد الأدنى {int(min_words * 0.75)}). تُعاد المحاولة لاحقًا.")
+            f"القصة أقصر من المقبول بعد {max_attempts} محاولات وتوسيعها "
+            f"({final['stats']['words']} كلمة، الحد الأدنى {int(min_words * 0.75)}). "
+            "تُعاد المحاولة لاحقًا.")
     return final
