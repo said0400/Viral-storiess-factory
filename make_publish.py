@@ -28,7 +28,7 @@ from typing import Any
 import requests
 
 # تصنيف افتراضي: لا يُنشر المقال بلا تسمية أبدًا (مصدر موحد في categories.py)
-from categories import DEFAULT_CATEGORY as DEFAULT_LABEL  # noqa: E402
+from categories import DEFAULT_CATEGORY, labels_for  # noqa: E402
 
 TIMEOUT = 90          # Make قد يتأخر في الرد
 REQUEST_TIMEOUT = 20
@@ -358,9 +358,10 @@ def publish(out_dir: Path) -> dict[str, Any]:
         labels = split_labels(requested)
     elif isinstance(result.get("labels"), list) and result["labels"]:
         labels = split_labels(",".join(str(x).replace(",", " ") for x in result["labels"]))
-    else:                                            # الأخبار: تصنيف الذكاء الاصطناعي
-        labels = split_labels(str(result.get("category") or ""))
-    labels = labels or [DEFAULT_LABEL]
+    else:                                            # الأخبار: القسم + التصنيف الفرعي المنشور
+        category = str(result.get("category") or "").strip()
+        labels = labels_for(category) or split_labels(category)
+    labels = labels or labels_for(DEFAULT_CATEGORY)
     draft = _flag("BLOGGER_DRAFT")
 
     payload = {
