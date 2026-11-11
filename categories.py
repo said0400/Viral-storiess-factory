@@ -1,6 +1,10 @@
 """
-التصنيفات الخمسة: مصدر واحد تستورده كل الملفات (writer.py و picker.py و blogger_publish.py)
+التصنيفات: مصدر واحد تستورده كل الملفات (writer.py و picker.py و make_publish.py)
 حتى لا تختلف القوائم بينها. لا تضع هنا شيئًا آخر.
+
+CATEGORIES معرّفات داخلية يستعملها الذكاء الاصطناعي في الاختيار وكتابة المقال، وتبقى كما هي.
+أما الأسماء المنشورة في Blogger فهي PUBLIC_LABELS: كل مقال يحمل وسمين، القسم ثم التصنيف الفرعي
+(وقسم «تريند» وسم واحد). غيّر الأسماء المنشورة من هنا دون لمس بقية الملفات.
 """
 from __future__ import annotations
 
@@ -14,3 +18,19 @@ CATEGORIES = [
 
 # تصنيف افتراضي: لا يُترك المقال بلا تصنيف أبدًا
 DEFAULT_CATEGORY = CATEGORIES[0]
+
+SECTION_WORLD = "عجائب العالم"
+
+# الأسماء المنشورة (وسوم Blogger): [القسم، التصنيف الفرعي]
+PUBLIC_LABELS: dict[str, list[str]] = {
+    "غرائب وعجائب": [SECTION_WORLD, "عجائب وغرائب"],
+    "معجزات ونجاة": [SECTION_WORLD, "عجائب النجاة"],
+    "حول العالم": [SECTION_WORLD, "عجائب البلدان"],
+    "قصص إنسانية وواقعية": [SECTION_WORLD, "عجائب إنسانية"],
+    "تريند": ["تريند"],
+}
+
+
+def labels_for(category: str) -> list[str]:
+    """وسوم Blogger لتصنيف داخلي؛ قائمة فارغة إن لم يكن معروفًا."""
+    return list(PUBLIC_LABELS.get((category or "").strip(), []))
