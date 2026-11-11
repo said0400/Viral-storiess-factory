@@ -65,7 +65,8 @@ def build_notes(story: dict[str, Any]) -> str:
         "ملاحظات المحرر (للاستخدام الداخلي، لا تُنشر)",
         "=" * 40,
         f"التصنيف: {story['category']}",
-        f"الكاتب: {writer['provider']} ({writer['model']})، المحاولات: {writer['attempts']}",
+        f"الكاتب: {writer['provider']} ({writer['model']})، المحاولات: {writer['attempts']}، "
+        f"توسيعات القصة القصيرة: {writer.get('expansions', 0)}",
         f"عدد الكلمات: {stats['words']} (الحد الأدنى {stats['min_words']}) "
         f"— مدة القراءة نحو {stats['reading_minutes']} دقيقة",
         "",
@@ -138,7 +139,7 @@ def run() -> Path:
         "title": story["title"],
         "original_title": story["title"],
         "category": category,
-        "labels": [story_categories.PARENT_LABEL, category],
+        "labels": story_categories.labels_for(category),
         "facebook_post": story["facebook_post"],
         "first_comment": story["first_comment"],
         "hashtags": story["hashtags"],
