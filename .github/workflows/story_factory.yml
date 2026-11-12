@@ -1,4 +1,4 @@
-name: Story Factory2
+name: Story Factory
 
 on:
   schedule:
@@ -20,10 +20,10 @@ on:
         type: choice
         options:
           - auto
-          - قصص الجرائم والتحقيقات البوليسية
-          - قصص الرعب والماورائيات والغموض
-          - القصص الاجتماعية الواقعية والدراما
-          - قصص الذكاء والمكر والخدع
+          - قصص الجريمة
+          - قصص الرعب
+          - قصص اجتماعية
+          - قصص الدهاء
       publish_to_blogger:
         description: "النشر على Blogger عبر Make (ألغِه في تشغيلات الاختبار)"
         required: false
