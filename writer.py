@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import gemini
 import grok
+import key_pool
 from gemini import GeminiError
 from grok import GrokError
 
@@ -278,6 +279,7 @@ def _numbers(text: str) -> set[str]:
 # الرأي الشخصي هو آخر جزء في المقال (تحت آخر عنوان ##). نسمح بهامش حول 150 إلى 250.
 OPINION_MIN_OK = 130
 OPINION_MAX_OK = 280
+ARTICLE_MIN_RATIO = 0.75     # أقل طول مقبول للمقال كله قياسًا بالطول المستهدف
 
 
 def _opinion_words(article: str) -> int | None:
@@ -342,6 +344,11 @@ def audit(
     if opinion is not None and not (OPINION_MIN_OK <= opinion <= OPINION_MAX_OK):
         issues["opinion_length"] = [f"{opinion} كلمة"]
 
+    total_words = len(re.findall(r"\S+", data.get("rewritten_article", "")))
+    minimum = int(_target_words(source_text) * ARTICLE_MIN_RATIO)
+    if total_words < minimum:
+        issues["short_article"] = [f"{total_words} كلمة (الحد الأدنى {minimum})"]
+
     return issues
 
 
@@ -356,6 +363,7 @@ ISSUE_LABELS = {
     "stock_phrases": "عبارات قوالب آلية",
     "direct_cta": "دعوة مباشرة في منشور فيسبوك",
     "opinion_length": "طول الرأي الشخصي خارج 150 إلى 250 كلمة",
+    "short_article": "المقال أقصر من الطول المطلوب",
 }
 
 
@@ -666,15 +674,34 @@ def _call(
 ) -> tuple[str, str]:
     """يعيد (النص، اسم النموذج)."""
     if provider == "gemini":
-        key = os.getenv("GEMINI_WRITER_API_KEY", "").strip()
-        if not key:
+        # عدة حسابات: GEMINI_WRITER_API_KEY بمفاتيح مفصولة بفاصلة؛ يُبدَّل عند توقف الحساب
+        keys = key_pool.load_keys("GEMINI_WRITER_API_KEY")
+        if not keys:
             raise WriterError(
                 "المفتاح GEMINI_WRITER_API_KEY غير موجود في GitHub Secrets."
             )
-        return gemini._generate(
-            [{"text": user}], system,
-            max_tokens=max_tokens, temperature=temperature,
-            api_key=key, models=_writer_models(),
+        live = key_pool.usable(keys)
+        last_error: GeminiError | None = None
+        for number, key in enumerate(live, start=1):
+            try:
+                return gemini._generate(
+                    [{"text": user}], system,
+                    max_tokens=max_tokens, temperature=temperature,
+                    api_key=key, models=_writer_models(),
+                )
+            except GeminiError as exc:
+                last_error = exc
+                if key_pool.is_permanent(str(exc)):
+                    key_pool.mark_dead(key, str(exc))
+                if number < len(live):
+                    print(f"::warning title=حساب Gemini::توقف الحساب {key_pool.mask(key)} "
+                          f"({str(exc)[:110]})؛ التبديل إلى الحساب التالي "
+                          f"({number + 1} من {len(live)}).")
+        if last_error is not None:
+            raise last_error
+        raise WriterError(
+            f"كل حسابات Gemini للكتابة ({len(keys)}) متوقفة: انتهت الحصة اليومية "
+            "أو المفتاح غير صالح."
         )
 
     model = os.getenv("GROQ_MODEL", "").strip() or grok.DEFAULT_TEXT_MODEL
@@ -752,9 +779,7 @@ def write_article(
     errors: list[str] = []
 
     for provider in _providers():
-        if provider == "gemini" and not os.getenv(
-            "GEMINI_WRITER_API_KEY", ""
-        ).strip():
+        if provider == "gemini" and not key_pool.load_keys("GEMINI_WRITER_API_KEY"):
             errors.append("Gemini: المفتاح GEMINI_WRITER_API_KEY غير موجود.")
             continue
 
@@ -773,11 +798,17 @@ def write_article(
         issues = audit(data, article_text, source_url)
         attempts = 1
 
-        if issues:
+        # يُكرَّر التصحيح (حتى WRITER_MAX_FIXES مرات، الافتراضي 3) ما دامت فيه مخالفات،
+        # ويُحتفظ بأفضل نسخة بين المحاولات.
+        max_fixes = grok._env_int("WRITER_MAX_FIXES", 3, 1, 6)
+        for fix_number in range(1, max_fixes + 1):
+            if not issues:
+                break
             listing = "؛ ".join(
                 f"{ISSUE_LABELS[k]}: {', '.join(v)}" for k, v in issues.items()
             )
-            print(f"تنبيه: مخالفات في الصياغة ({listing})؛ إعادة كتابة.")
+            print(f"تنبيه: مخالفات في الصياغة ({listing})؛ "
+                  f"إعادة كتابة ({fix_number} من {max_fixes}).")
             fix_user = (
                 user + "\n\nالنسخة السابقة خالفت القواعد التالية، أعد كتابة "
                 f"JSON كاملًا مصححًا ولا تكررها: {listing}"
@@ -786,7 +817,7 @@ def write_article(
                 data2, model2 = _write_once(
                     provider, system, fix_user, category, related
                 )
-                attempts = 2
+                attempts += 1
                 issues2 = audit(data2, article_text, source_url)
                 if issue_total(issues2) <= issue_total(issues):
                     data, model, issues = data2, model2, issues2
@@ -795,6 +826,7 @@ def write_article(
                 TypeError,
             ) as exc:
                 errors.append(f"{provider} (إعادة): {exc}")
+                break
 
         review = None
         if os.getenv("AI_REVIEW", "").strip().lower() not in {
@@ -844,7 +876,8 @@ def write_article(
 # ---------------------------------------------------------------------------
 
 # المخالفات التي ترفض القصة (تُعدَّل من متغير REJECT_ON، مفصولة بفواصل)
-DEFAULT_REJECT_ON = ("personal_claims", "source_mentions", "numbers_not_in_source")
+DEFAULT_REJECT_ON = ("personal_claims", "source_mentions", "numbers_not_in_source",
+                     "opinion_length", "short_article")
 # أكثر من هذا العدد من الجمل غير المدعومة بالمصدر يرفض القصة (MAX_UNSUPPORTED)
 MAX_UNSUPPORTED_SENTENCES = 1
 
