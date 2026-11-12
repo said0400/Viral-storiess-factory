@@ -18,6 +18,8 @@ from typing import Any
 import requests
 from PIL import Image, ImageOps
 
+import key_pool
+
 
 API_BASE = "https://api.cloudflare.com/client/v4/accounts"
 DEFAULT_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -43,11 +45,34 @@ class CloudflareFlaggedError(CloudflareError):
     """رفض مرشّح المحتوى الطلب أو الناتج (الخطأ 3030)؛ قد تنجح محاولة مختلفة."""
 
 
+_MISMATCH_WARNED = False
+
+
+def accounts() -> list[tuple[str, str]]:
+    """
+    حسابات Cloudflare كأزواج (account_id، token) بالترتيب. تُوضع في السرين نفسيهما مفصولة
+    بفاصلة وبالترتيب نفسه:
+        CF_ACCOUNT_ID = id1,id2        CF_API_TOKEN = token1,token2
+    (أو CF_ACCOUNT_ID_2 و CF_API_TOKEN_2 ... إن أضفتها إلى env في الـ workflow).
+    وإن وُجد معرّف واحد مع عدة رموز يُستعمل المعرّف نفسه معها.
+    """
+    global _MISMATCH_WARNED
+    ids = key_pool.load_keys("CF_ACCOUNT_ID")
+    tokens = key_pool.load_keys("CF_API_TOKEN")
+    if len(ids) == 1 and len(tokens) > 1:
+        ids = ids * len(tokens)
+    if len(ids) != len(tokens):
+        count = min(len(ids), len(tokens))
+        if not _MISMATCH_WARNED:
+            _MISMATCH_WARNED = True
+            print(f"::warning title=حسابات Cloudflare::عدد CF_ACCOUNT_ID ({len(ids)}) لا يساوي "
+                  f"عدد CF_API_TOKEN ({len(tokens)})؛ يُستعمل أول {count} فقط بالترتيب.")
+        ids, tokens = ids[:count], tokens[:count]
+    return list(zip(ids, tokens))
+
+
 def is_configured() -> bool:
-    return bool(
-        os.getenv("CF_ACCOUNT_ID", "").strip()
-        and os.getenv("CF_API_TOKEN", "").strip()
-    )
+    return bool(accounts())
 
 
 def model_name() -> str:
@@ -148,17 +173,20 @@ def _decode_image(response: requests.Response) -> Image.Image:
         raise CloudflareError("الملف المُعاد ليس صورة صالحة.") from exc
 
 
-def generate_image(
+def _generate_image_once(
     prompt: str,
     references: list[Image.Image],
     width: int = 1280,
     height: int = 720,
     seed: int | None = None,
     model: str | None = None,
+    account: str = "",
+    token: str = "",
 ) -> Image.Image:
-    """يولّد صورة بالأبعاد المطلوبة، أو يرفع CloudflareError."""
-    account = os.getenv("CF_ACCOUNT_ID", "").strip()
-    token = os.getenv("CF_API_TOKEN", "").strip()
+    """يولّد صورة بحساب واحد بالأبعاد المطلوبة، أو يرفع CloudflareError."""
+    if not account or not token:
+        first = (accounts() or [("", "")])[0]
+        account, token = account or first[0], token or first[1]
     if not account or not token:
         raise CloudflareError(
             "المفتاحان CF_ACCOUNT_ID و CF_API_TOKEN غير موجودين في Secrets."
@@ -211,3 +239,52 @@ def generate_image(
             time.sleep(wait)
 
     raise CloudflareError(last_error)
+
+
+def generate_image(
+    prompt: str,
+    references: list[Image.Image],
+    width: int = 1280,
+    height: int = 720,
+    seed: int | None = None,
+    model: str | None = None,
+) -> Image.Image:
+    """
+    يولّد صورة بالأبعاد المطلوبة، أو يرفع CloudflareError. يدعم عدة حسابات (انظر accounts):
+    يُستعمل الأول حتى تنتهي حصته اليومية أو يصير رمزه غير صالح، فيُنتقل إلى التالي.
+    لا يُرفع CloudflareQuotaError (الذي يوقف سلالم المحاولات) إلا حين تتوقف كل الحسابات.
+    رفض مرشّح المحتوى (CloudflareFlaggedError) يمر كما هو لأنه يتكرر في كل حساب.
+    """
+    pairs = accounts()
+    if not pairs:
+        raise CloudflareError(
+            "المفتاحان CF_ACCOUNT_ID و CF_API_TOKEN غير موجودين في Secrets."
+        )
+    live = [pair for pair in pairs if not key_pool.is_dead(pair[1])]
+    if not live:
+        raise CloudflareQuotaError(
+            f"كل حسابات Cloudflare ({len(pairs)}) متوقفة: انتهت الحصة اليومية "
+            "أو الرمز غير صالح."
+        )
+
+    last: CloudflareError | None = None
+    for number, (account, token) in enumerate(live, start=1):
+        try:
+            return _generate_image_once(
+                prompt, references, width, height, seed, model, account, token
+            )
+        except CloudflareQuotaError as exc:
+            last = exc
+            key_pool.mark_dead(token, str(exc))
+        except CloudflareFlaggedError:
+            raise
+        except CloudflareError as exc:
+            if not key_pool.is_permanent(str(exc)):
+                raise                       # خطأ غير متعلق بالحساب نفسه
+            last = exc
+            key_pool.mark_dead(token, str(exc))
+        if number < len(live):
+            print(f"::warning title=حساب Cloudflare::توقف الحساب {key_pool.mask(token)} "
+                  f"({str(last)[:110]})؛ التبديل إلى الحساب التالي "
+                  f"({number + 1} من {len(live)}).")
+    raise last or CloudflareError("فشل توليد الصورة في كل حسابات Cloudflare.")
