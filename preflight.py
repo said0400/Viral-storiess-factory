@@ -21,6 +21,7 @@ from pathlib import Path
 # الملف: ما يجب أن يوفّره (أسماء تكشف الإصدار القديم من الجديد)
 EXPECTED: dict[str, list[str]] = {
     "categories": ["CATEGORIES", "DEFAULT_CATEGORY", "labels_for"],
+    "key_pool": ["load_keys", "usable", "mark_dead", "split_keys"],
     "grok": ["analyze_images", "_images_for_attempt", "fallback_plan", "default_gallery"],
     "gemini": ["analyze_images", "_generate"],
     "cloudflare_ai": ["generate_image", "CloudflareQuotaError", "CloudflareFlaggedError",
@@ -30,7 +31,7 @@ EXPECTED: dict[str, list[str]] = {
     "thumbnail": ["create_thumbnail", "_try_ai_full_ladder"],
     "fb_cover": ["create_design", "facebook_height"],
     "writer": ["write_article", "rejection_reason", "build_first_comment_text",
-               "build_post_text", "CATEGORIES"],
+               "build_post_text", "CATEGORIES", "build_source_line", "OPINION_RULES"],
     "related": ["published_articles"],
     "main": ["main", "StoryRejected", "output_folder_for", "extract_article"],
     "picker": ["pick_story", "rank_items", "collect_items"],
@@ -38,12 +39,14 @@ EXPECTED: dict[str, list[str]] = {
     "make_publish": ["publish", "fill_first_comment", "labels_for"],
     "story_categories": ["STORY_CATEGORIES", "next_category", "load_story_results",
                          "canonical_category", "labels_for"],
-    "story_writer": ["write_story", "load_history", "append_related"],
+    "story_writer": ["write_story", "load_history", "append_related", "SEO_RULES",
+                     "build_author_line"],
     "story_image": ["build_story_images"],
     "story_factory": ["main", "run"],
-    "story_text": ["clean_story_text", "story_paragraphs", "split_chunks"],
+    "story_text": ["clean_story_text", "story_paragraphs", "split_chunks", "AUTHOR_MARK"],
     "story_scenes": ["make_storyboard", "generate_scene_images", "scene_segments"],
-    "story_video": ["main", "run", "clean_story_text", "insert_video_links", "make_slideshow"],
+    "story_video": ["main", "run", "clean_story_text", "insert_video_links", "make_slideshow",
+                    "build_chapters", "build_hashtags"],
     "whatsapp_notify": ["main", "notify"],
 }
 
@@ -134,6 +137,14 @@ def main(root: Path | None = None) -> int:
         print(f"  {'موجود ' if present else 'غير موجود'} {key}  ({purpose})")
         if not present:
             (critical if is_critical else warnings).append(f"السر {key} غير مضبوط ({purpose})")
+
+    try:                                              # عدد الحسابات المضبوطة لكل خدمة
+        import key_pool
+        for label, names in (("Gemini للكتابة", ("GEMINI_WRITER_API_KEY",)),
+                             ("Gemini للصوت والصور", ("GEMINI_TTS_API_KEY", "GEMINI_API_KEY"))):
+            print(f"  عدد حسابات {label}: {len(key_pool.load_keys(*names))}")
+    except Exception:                                 # noqa: BLE001 - معلومة إضافية فقط
+        pass
 
     for message in warnings:
         print(f"::warning title=تحذير::{message}")
