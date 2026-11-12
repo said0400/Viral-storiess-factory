@@ -10,6 +10,7 @@ from typing import Any
 import requests
 from PIL import Image, ImageOps
 
+import key_pool
 from grok import _extract_json, _norm_box, _validate_plan
 
 
@@ -35,7 +36,7 @@ class GeminiError(Exception):
 
 
 def _api_key() -> str:
-    key = os.getenv("GEMINI_API_KEY", "").strip()
+    key = (key_pool.load_keys("GEMINI_API_KEY") or [""])[0]
     if not key:
         raise GeminiError(
             "المفتاح GEMINI_API_KEY غير موجود في GitHub Secrets."
@@ -93,7 +94,7 @@ def _extract_text(data: dict[str, Any]) -> str:
     return text
 
 
-def _generate(
+def _generate_once(
     parts: list[dict[str, Any]],
     system_text: str,
     max_tokens: int = 8192,
@@ -172,6 +173,43 @@ def _generate(
                 time.sleep(wait)
 
     raise GeminiError(last_error)
+
+
+def _generate(
+    parts: list[dict[str, Any]],
+    system_text: str,
+    max_tokens: int = 8192,
+    temperature: float = 0.1,
+    api_key: str | None = None,
+    models: list[str] | None = None,
+) -> tuple[str, str]:
+    """
+    يعيد (النص، اسم النموذج المستخدم). يدعم عدة حسابات: GEMINI_API_KEY بمفاتيح مفصولة بفاصلة؛
+    يُستعمل الأول حتى يتوقف (حصة يومية أو مفتاح غير صالح أو فشل متكرر) فيُنتقل إلى التالي.
+    وإن مُرِّر api_key صراحة (كما تفعل وحدة كتابة المقال، وهي تبدّل مفاتيحها بنفسها)
+    يُستعمل وحده دون تبديل.
+    """
+    if (api_key or "").strip():
+        return _generate_once(parts, system_text, max_tokens, temperature, api_key, models)
+
+    keys = key_pool.load_keys("GEMINI_API_KEY")
+    if not keys:
+        _api_key()                           # يرفع الخطأ المعتاد: المفتاح غير موجود
+    live = key_pool.usable(keys)
+    last: GeminiError | None = None
+    for number, key in enumerate(live, start=1):
+        try:
+            return _generate_once(parts, system_text, max_tokens, temperature, key, models)
+        except GeminiError as exc:
+            last = exc
+            if key_pool.is_permanent(str(exc)):
+                key_pool.mark_dead(key, str(exc))
+            if number < len(live):
+                print(f"::warning title=حساب Gemini::توقف الحساب {key_pool.mask(key)} "
+                      f"({str(exc)[:110]})؛ التبديل إلى الحساب التالي "
+                      f"({number + 1} من {len(live)}).")
+    raise last or GeminiError(
+        f"كل حسابات Gemini ({len(keys)}) متوقفة: انتهت الحصة اليومية أو المفتاح غير صالح.")
 
 
 def _to_xyxy(value: Any) -> list[float] | None:
