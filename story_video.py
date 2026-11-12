@@ -15,7 +15,7 @@
   4) رفع story.mp4 إلى GitHub Releases (رابط عام) فيُرسَل الرابط إلى Make لا الملف.
   5) Make يرفع إلى يوتيوب. نقرأ رابط الفيديو من رد Make (youtube_url أو video_id)،
      وإلا نراقب خلاصة RSS لقناتك (YOUTUBE_CHANNEL_ID) حتى يظهر الفيديو بعنوانه.
-  6) نضع رابط الفيديو في القصة: أعلاها ووسطها وآخرها، ونحفظه في result.json.
+  6) نضع رابط الفيديو في القصة: بعد مقدمتها ووسطها وآخرها، ونحفظه في result.json.
 
 STORY_TTS_STYLE / STORY_TTS_OUTRO: النص الافتراضي إن تُركا فارغين، و none يعطّلهما.
 STORY_VIDEO: off = تعطيل | local = صوت وفيديو للفحص فقط (بلا رفع) | full = كل المراحل.
@@ -664,8 +664,26 @@ def wait_for_video(channel_id: str, title: str, since: datetime,
 # 4) روابط الفيديو داخل القصة
 # ---------------------------------------------------------------------------
 
+def _intro_end(body: list[str]) -> int:
+    """
+    موضع رابط الاستماع: بعد مقدمة القصة. المقدمة هي الفقرات التي تسبق أول عنوان فرعي
+    إن جاء خلال أول ثلاث فقرات، وإلا فالفقرة الأولى وحدها. يعيد فهرس الكتلة التي
+    يوضع الرابط قبلها.
+    """
+    first = 0
+    while first < len(body) and body[first].lstrip().startswith("#"):
+        first += 1                                    # عناوين تسبق المقدمة نفسها
+    for index in range(first + 1, min(first + 4, len(body))):
+        if body[index].lstrip().startswith("#"):
+            return index
+    return min(first + 1, len(body))
+
+
 def insert_video_links(markdown: str, url: str) -> str:
-    """يضيف رابط «القصة مسموعة» أول القصة ووسطها وآخرها (قبل سطور «اقرأ أيضًا»)."""
+    """
+    يضيف رابط «القصة مسموعة» بعد مقدمة القصة، ثم في وسطها، ثم في آخرها
+    (قبل سطور «اقرأ أيضًا»).
+    """
     if url in markdown:
         return markdown
     top = f"**🎧 [استمع إلى هذه القصة مسموعة بالفيديو على يوتيوب]({url})**"
@@ -681,18 +699,27 @@ def insert_video_links(markdown: str, url: str) -> str:
     if not body:
         return markdown
 
+    intro = _intro_end(body)
+
+    # الوسط: بعد الرابط الأول بكتلة على الأقل وقبل النهاية بكتلة على الأقل.
+    mid_index = None
     if len(body) >= 3:
         total = sum(len(b) for b in body)
         running, positions = 0, []
         for index, block in enumerate(body[:-1], start=1):
             running += len(block)
-            positions.append((index, running, body[index].lstrip().startswith("## ")))
-        headings = [p for p in positions if p[2]]
-        pool = headings or positions
-        index = min(pool, key=lambda p: abs(p[1] - total / 2))[0]
-        body = body[:index] + [mid] + body[index:]
+            if index > intro:
+                positions.append((index, running, body[index].lstrip().startswith("## ")))
+        pool = [p for p in positions if p[2]] or positions
+        if pool:
+            mid_index = min(pool, key=lambda p: abs(p[1] - total / 2))[0]
 
-    merged = blocks[:start] + [top] + body + [end] + blocks[stop:]
+    if mid_index is not None:                          # الأبعد أولًا كي لا تتزحزح الفهارس
+        body = body[:mid_index] + [mid] + body[mid_index:]
+    if intro < len(body):                              # إن كانت القصة كلها مقدمة يكفي رابط النهاية
+        body = body[:intro] + [top] + body[intro:]
+
+    merged = blocks[:start] + body + [end] + blocks[stop:]
     return "\n\n".join(merged).strip() + "\n"
 
 
@@ -712,27 +739,125 @@ def patch_outputs(out_dir: Path, url: str, extra: dict[str, Any]) -> None:
 # التشغيل
 # ---------------------------------------------------------------------------
 
-def build_description(result: dict[str, Any]) -> str:
+YOUTUBE_DESCRIPTION_BYTES = 4900     # حد يوتيوب 5000 بايت (والحرف العربي بايتان)
+MIN_CHAPTER_SECONDS = 10             # أقل طول لفصل في فصول يوتيوب
+MAX_HASHTAGS = 12                    # أكثر من 15 يجعل يوتيوب يتجاهلها كلها
+
+
+def _fit_bytes(text: str, limit: int) -> str:
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    return raw[:limit].decode("utf-8", errors="ignore").rstrip()
+
+
+def _hashtag(text: str) -> str:
+    """وسم يوتيوب: بلا مسافات ولا رموز (المسافة تصبح _)، ولا يكون أرقامًا فقط."""
+    word = re.sub(r"[^\w]+", "_", _plain(str(text or ""))).strip("_")
+    return f"#{word}" if word and not word.isdigit() else ""
+
+
+def build_hashtags(result: dict[str, Any], limit: int = MAX_HASHTAGS) -> list[str]:
+    """أول ثلاثة وسوم تظهر فوق عنوان الفيديو، لذا تبدأ بالكلمة المفتاحية ثم التصنيف."""
     seo = result.get("seo") if isinstance(result.get("seo"), dict) else {}
-    parts = [str(seo.get("meta_description") or "").strip(),
-             str(result.get("category") or "").strip(),
-             " ".join(result.get("hashtags") or [])]
+    candidates = [seo.get("focus_keyword"), result.get("category"), "قصص مسموعة",
+                  story_categories.PARENT_LABEL, *(seo.get("keywords") or []),
+                  *[str(h).lstrip("#") for h in (result.get("hashtags") or [])]]
+    tags: list[str] = []
+    for item in candidates:
+        tag = _hashtag(item)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags[:limit]
+
+
+def _stamp(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
+def build_chapters(markdown: str, title: str, info: dict[str, Any],
+                   audio_seconds: float) -> list[str]:
+    """
+    فصول يوتيوب من العناوين الفرعية (##) في القصة، بتوقيتها الفعلي في الصوت المروي.
+    تبدأ بـ «المقدمة» عند 00:00. يوتيوب لا يفعّل الفصول إلا بثلاثة فصول فأكثر وبطول
+    10 ثوانٍ لكل فصل على الأقل، وإلا تعيد قائمة فارغة فلا يُكتب شيء.
+    """
+    raw_blocks = [b.strip() for b in re.split(r"\n{2,}", markdown or "")]
+    names = {re.sub(r"^#{1,6}\s*", "", b).replace("**", "").replace("*", "").strip()
+             for b in raw_blocks if re.match(r"##+\s", b)}
+    if not names:
+        return []
+    paragraphs = story_paragraphs(markdown)
+    starts = story_scenes.paragraph_start_times(
+        paragraphs, title, info["chunk_texts"], info["chunk_seconds"], PAUSE_SECONDS)
+
+    chapters: list[tuple[float, str]] = [(0.0, "المقدمة")]
+    for paragraph, moment in zip(paragraphs, starts):
+        if paragraph not in names:
+            continue
+        if (moment - chapters[-1][0] >= MIN_CHAPTER_SECONDS
+                and audio_seconds - moment >= MIN_CHAPTER_SECONDS):
+            chapters.append((moment, paragraph[:70]))
+    if len(chapters) < 3:
+        return []
+    return [f"{_stamp(moment)} {name}" for moment, name in chapters]
+
+
+def build_description(result: dict[str, Any], chapters: list[str] | None = None) -> str:
+    """
+    وصف يوتيوب خاص بكل قصة: عنوانها ووصفها، فصولها بتوقيتها، روابط القسم والتصنيف،
+    الكلمات المفتاحية، ثم الوسوم في الآخر. يُقتطع بالبايت لا بالحروف كي لا يرفضه يوتيوب.
+    """
+    seo = result.get("seo") if isinstance(result.get("seo"), dict) else {}
+    title = str(result.get("title") or "").strip()
+    category = str(result.get("category") or "").strip()
+    meta = str(seo.get("meta_description") or "").strip()
+    keywords = [str(k).strip() for k in (seo.get("keywords") or []) if str(k).strip()]
+
+    parts = [f"🎧 {title} | قصة مسموعة" + (f" — {category}" if category else "")]
+    if meta:
+        parts.append(meta)
+    summary = str(seo.get("video_summary") or "").strip()
+    if summary and summary != meta:                     # ملخص خاص بالفيديو يكتبه كاتب القصة
+        parts.append(summary)
+    if chapters:
+        parts.append("⏱ فصول القصة:\n" + "\n".join(chapters))
+
     blog = os.getenv("STORY_BLOG_URL", "").strip().rstrip("/")
     if blog:
-        label = quote(story_categories.PARENT_LABEL)
-        parts.append(f"اقرأ القصص مكتوبة على مدونتنا: {blog}/search/label/{label}")
-    return "\n\n".join(p for p in parts if p)[:4500]
+        links = ["📖 اقرأ القصص مكتوبة على مدونتنا:"]
+        links.append(f"{story_categories.PARENT_LABEL}: "
+                     f"{blog}/search/label/{quote(story_categories.PARENT_LABEL)}")
+        if category:
+            links.append(f"{category}: {blog}/search/label/{quote(category)}")
+        parts.append("\n".join(links))
+
+    parts.append("🔔 إن أعجبتك القصة فاشترك في القناة وفعّل الجرس ليصلك كل جديد، "
+                 "وشاركنا رأيك في التعليقات.")
+    if keywords:
+        parts.append("🔎 الكلمات المفتاحية: " + "، ".join(keywords))
+    parts.append("⚠ القصة من وحي الخيال، وأي تشابه مع أشخاص أو وقائع حقيقية غير مقصود.")
+
+    tail = " ".join(build_hashtags(result))
+    body = "\n\n".join(p for p in parts if p).replace("<", "").replace(">", "")
+    budget = YOUTUBE_DESCRIPTION_BYTES - len(tail.encode("utf-8")) - 2
+    return (_fit_bytes(body, budget) + ("\n\n" + tail if tail else "")).strip()
 
 
 def build_tags(result: dict[str, Any]) -> list[str]:
+    """وسوم الفيديو المخفية (حدها 500 حرف؛ الوسم متعدد الكلمات يُحسب بعلامتي اقتباس)."""
     seo = result.get("seo") if isinstance(result.get("seo"), dict) else {}
     tags, total = [], 0
-    for tag in [*(seo.get("keywords") or []), "قصص", "قصة مسموعة",
+    for tag in [seo.get("focus_keyword"), *(seo.get("keywords") or []), "قصص", "قصة مسموعة",
                 story_categories.PARENT_LABEL, str(result.get("category") or "")]:
-        tag = str(tag).strip()
-        if tag and tag not in tags and total + len(tag) < 450:
+        tag = str(tag or "").strip().replace("<", "").replace(">", "")
+        cost = len(tag) + (2 if " " in tag else 0) + 1
+        if tag and tag not in tags and total + cost < 450:
             tags.append(tag)
-            total += len(tag)
+            total += cost
     return tags
 
 
@@ -826,10 +951,19 @@ def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
     video_url = upload_release(mp4, repo, tag, title)
     print(f"رابط الفيديو للتنزيل: {video_url}")
 
+    try:
+        chapters = build_chapters(markdown, str(result.get("title") or ""), info,
+                                  info["seconds"])
+    except Exception as exc:  # noqa: BLE001 - الفصول إضافة: الوصف يعمل بدونها
+        print(f"::warning title=فصول الفيديو::{type(exc).__name__}: {exc}")
+        chapters = []
+    if chapters:
+        print("فصول الفيديو:\n  " + "\n  ".join(chapters))
+
     started = datetime.now(timezone.utc)
     payload = {
         "title": title,
-        "description": build_description(result),
+        "description": build_description(result, chapters),
         "tags": build_tags(result),
         "tags_csv": ", ".join(build_tags(result)),
         "video_url": video_url,
@@ -854,7 +988,7 @@ def run(out_dir: Path, work_dir: Path) -> dict[str, Any]:
 
     details["youtube_url"] = youtube_url
     patch_outputs(out_dir, youtube_url, details)
-    print(f"رابط يوتيوب: {youtube_url}\nوُضع رابط الفيديو في القصة: أعلاها ووسطها وآخرها.")
+    print(f"رابط يوتيوب: {youtube_url}\nوُضع رابط الفيديو في القصة: بعد المقدمة ووسطها وآخرها.")
     return details
 
 
