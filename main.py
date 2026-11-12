@@ -201,6 +201,19 @@ def extract_article(article_url: str) -> dict:
     if not title:
         title = "مقال بدون عنوان واضح"
 
+    # اسم الموقع كما يعرّف به نفسه (يُستعمل في سطر المصدر آخر المقال)
+    site_name = ""
+    for selector in (
+        'meta[property="og:site_name"]',
+        'meta[name="application-name"]',
+    ):
+        node = soup.select_one(selector)
+        if node:
+            candidate = clean_text(node.get("content"))
+            if candidate and not re.match(r"https?://", candidate, re.IGNORECASE):
+                site_name = candidate[:60]
+                break
+
     extracted = trafilatura.extract(
         html,
         url=final_url,
@@ -289,6 +302,7 @@ def extract_article(article_url: str) -> dict:
 
     return {
         "source_url": final_url,
+        "site_name": site_name,
         "title": title,
         "text": article_text,
         "image_urls": image_urls[:30],
@@ -534,6 +548,7 @@ def main():
             article_title=article["title"],
             article_text=article["text"],
             source_url=article["source_url"],
+            source_name=article.get("site_name", ""),
             category=content_category,
             related=related_articles,
         )
@@ -644,6 +659,7 @@ def main():
     result = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_url": article["source_url"],
+        "source_name": (rewritten.get("source") or {}).get("name", ""),
         "original_title": article["title"],
         "title": rewritten["title"],
         "facebook_post": rewritten["facebook_post"],
