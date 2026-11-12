@@ -25,8 +25,10 @@ import requests
 
 import gemini
 import grok
+import key_pool
 import story_categories
 from grok import GrokError
+from story_text import AUTHOR_MARK
 
 
 STYLE_FILE = Path(__file__).resolve().parent / "prompts" / "story_style.txt"
@@ -39,8 +41,8 @@ ATTEMPTS = 5                    # لكل نموذج: يتحمل ازدحام Gem
 PARSE_RETRIES = 2               # إعادة التوليد إن لم يكن الرد JSON صالحًا
 SIMILARITY_LIMIT = 0.45         # تشابه الفكرة أو المفاجأة (Jaccard) الذي يعدّ تكرارًا
 DEFAULT_MIN_WORDS = 1300
-DEFAULT_MAX_ATTEMPTS = 3        # محاولات كتابة كاملة للقصة الواحدة
-MAX_EXPANSIONS = 2              # توسيعات لقصة قصيرة قبل الاستسلام لقصة جديدة
+DEFAULT_MAX_ATTEMPTS = 4        # محاولات كتابة كاملة للقصة الواحدة
+MAX_EXPANSIONS = 3              # توسيعات لقصة قصيرة قبل الاستسلام لقصة جديدة
 
 LOG_KEYS = ("idea", "conflict", "characters", "setting", "opening", "twist", "ending")
 
@@ -311,9 +313,10 @@ def _models() -> list[str]:
     return [custom] if custom else list(gemini.DEFAULT_MODELS)
 
 
-def _call_gemini(system: str, user: str, temperature: float = 0.95) -> tuple[str, str]:
-    """يعيد (النص، اسم النموذج). يرفع StoryError إن فشلت كل النماذج."""
-    key = os.getenv("GEMINI_WRITER_API_KEY", "").strip()
+def _call_gemini_once(system: str, user: str, temperature: float = 0.95,
+                      key: str = "") -> tuple[str, str]:
+    """يعيد (النص، اسم النموذج) بمفتاح واحد. يرفع StoryError إن فشلت كل النماذج."""
+    key = key or (key_pool.load_keys("GEMINI_WRITER_API_KEY") or [""])[0]
     if not key:
         raise StoryError("المفتاح GEMINI_WRITER_API_KEY غير موجود في GitHub Secrets.")
 
@@ -367,6 +370,31 @@ def _call_gemini(system: str, user: str, temperature: float = 0.95) -> tuple[str
                       f"إعادة المحاولة بعد {wait} ثانية.")
                 time.sleep(wait)
     raise StoryError(last)
+
+
+def _call_gemini(system: str, user: str, temperature: float = 0.95) -> tuple[str, str]:
+    """
+    يعيد (النص، اسم النموذج). يدعم عدة حسابات (GEMINI_WRITER_API_KEY بمفاتيح مفصولة بفاصلة):
+    يُستعمل الأول حتى يتوقف (حصة يومية أو مفتاح غير صالح أو فشل متكرر) فيُنتقل إلى التالي.
+    """
+    keys = key_pool.load_keys("GEMINI_WRITER_API_KEY")
+    if not keys:
+        raise StoryError("المفتاح GEMINI_WRITER_API_KEY غير موجود في GitHub Secrets.")
+    live = key_pool.usable(keys)
+    last: StoryError | None = None
+    for number, key in enumerate(live, start=1):
+        try:
+            return _call_gemini_once(system, user, temperature, key)
+        except StoryError as exc:
+            last = exc
+            if key_pool.is_permanent(str(exc)):
+                key_pool.mark_dead(key, str(exc))
+            if number < len(live):
+                print(f"::warning title=حساب Gemini::توقف الحساب {key_pool.mask(key)} "
+                      f"({str(exc)[:110]})؛ التبديل إلى الحساب التالي "
+                      f"({number + 1} من {len(live)}).")
+    raise last or StoryError(
+        f"كل حسابات Gemini للكتابة ({len(keys)}) متوقفة: انتهت الحصة اليومية أو المفتاح غير صالح.")
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +480,23 @@ def normalize(raw: dict[str, Any], category: str) -> dict[str, Any]:
     }
 
 
+DEFAULT_BLOG_NAME = "المسيطرون"      # يُغيَّر من المتغير BLOG_NAME دون لمس الكود
+
+# صيغ متنوعة لسطر مصدر القصة (تُختار بثبات من نص القصة).
+AUTHOR_TEMPLATES = (
+    "**" + AUTHOR_MARK + " مصدر القصة:** كتبها فريق {name} خصيصًا لقرّاء المدونة، وهي من وحي الخيال.",
+    "**" + AUTHOR_MARK + " هذه القصة من تأليف فريق {name}.** أي تشابه مع أشخاص أو وقائع حقيقية غير مقصود.",
+    "**" + AUTHOR_MARK + " كتبها لكم فريق {name}**، قصة أصلية من وحي الخيال، ونحب أن نعرف رأيكم فيها.",
+)
+
+
+def build_author_line(article: str = "") -> str:
+    """سطر مصدر القصة: أنها كُتبت بقلم فريق المدونة (BLOG_NAME)."""
+    name = re.sub(r"[\[\]()*]", "", os.getenv("BLOG_NAME", "").strip()) or DEFAULT_BLOG_NAME
+    index = sum((article or "")[:300].encode("utf-8")) % len(AUTHOR_TEMPLATES)
+    return AUTHOR_TEMPLATES[index].format(name=name)
+
+
 def append_related(article: str, related: list[dict[str, str]], limit: int = 2) -> tuple[str, list[dict[str, str]]]:
     """يلحق سطور «اقرأ أيضًا» بقصص سابقة منشورة (روابط حقيقية) في آخر القصة."""
     used: list[dict[str, str]] = []
@@ -465,10 +510,12 @@ def append_related(article: str, related: list[dict[str, str]], limit: int = 2) 
         used.append({"title": title, "url": url})
         if len(used) >= limit:
             break
+    author = "" if AUTHOR_MARK in article else build_author_line(article)
     if not used:
-        return article, used
+        return (article.rstrip() + ("\n\n" + author if author else "")), used
     lines = [f"**اقرأ أيضًا:** [{item['title']}]({item['url']})" for item in used]
-    return article.rstrip() + "\n\n" + "\n\n".join(lines), used
+    head = article.rstrip() + ("\n\n" + author if author else "")
+    return head + "\n\n" + "\n\n".join(lines), used
 
 
 # ---------------------------------------------------------------------------
