@@ -109,6 +109,23 @@ HARD_FORMAT = """
 """.strip()
 
 
+SEO_RULES = """
+وصف SEO خاص بهذه القصة وحدها (يُقدَّم عند التعارض مع ما سبق):
+- "meta_description": بين 140 و160 حرفًا، تأتي الكلمة المفتاحية في أول 70 حرفًا منه، ويحمل
+  عنصرًا محددًا من هذه القصة (المكان أو الشيء الغامض أو اللغز الذي تدور حوله) ويترك فجوة فضول
+  دون أن يكشف المفاجأة أو النهاية أبدًا. ممنوع الوصف العام الذي يصلح لأي قصة أخرى، وممنوعة
+  القوالب مثل: اكتشف، تعرف على، قصة مثيرة، قصة غامضة، في هذه القصة.
+- "focus_keyword": عبارة من 2 إلى 4 كلمات خاصة بهذه القصة (لا «قصة رعب» ولا «قصة غامضة»).
+- "meta_title": يختلف عن "title" ولا يكرره حرفيًا، حتى 60 حرفًا.
+- "keywords": من 6 إلى 10 كلمات وعبارات من عناصر هذه القصة (المكان، الشيء، اللغز، الأجواء)
+  مع قليل من الكلمات العامة، لا كلمات عامة وحدها.
+- "slug": إنجليزي من 3 إلى 6 كلمات يعبّر عن موضوع هذه القصة تحديدًا.
+- مفتاح إضافي داخل كائن "seo" نفسه: "video_summary": من 2 إلى 3 جمل (من 220 إلى 400 حرف)
+  تعرّف المستمع بالقصة في فيديو يوتيوب: الأجواء والمكان والسؤال الذي تدور حوله، بلا كشف
+  للمفاجأة ولا النهاية، وبصياغة تختلف عن "meta_description".
+""".strip()
+
+
 class StoryError(Exception):
     """خطأ في كتابة القصة أو في مخرجات النموذج."""
 
@@ -164,6 +181,24 @@ def _trim_description(text: str, limit: int = 160) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rsplit(" ", 1)[0].rstrip(" ،,.:؛") + "…"
+
+
+def _fallback_description(article: str, limit: int = 160) -> str:
+    """وصف ميتا من افتتاحية هذه القصة نفسها، يُستعمل فقط إن جاء وصف النموذج فارغًا أو قصيرًا."""
+    for block in re.split(r"\n{2,}", article or ""):
+        block = block.strip()
+        if not block or block.startswith("#"):
+            continue
+        block = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", block)
+        block = block.replace("**", "").replace("*", "")
+        sentences = re.split(r"(?<=[.!؟?…])\s+", re.sub(r"\s+", " ", block))
+        text = ""
+        for sentence in sentences:
+            if len(text) + len(sentence) > limit and len(text) >= 110:
+                break
+            text = f"{text} {sentence}".strip()
+        return _trim_description(text, limit)
+    return ""
 
 
 def _slug(value: Any) -> str:
@@ -252,6 +287,7 @@ def build_system(category: str, history: list[dict[str, str]]) -> str:
         f"نطاقه: {info['description']}",
         _history_block(history),
         HARD_FORMAT,
+        SEO_RULES,
     ])
 
 
@@ -379,16 +415,19 @@ def normalize(raw: dict[str, Any], category: str) -> dict[str, Any]:
     ][:3]
 
     seo_raw = raw.get("seo") if isinstance(raw.get("seo"), dict) else {}
+    meta_description = _clean_line(seo_raw.get("meta_description"), 400)
+    if len(meta_description) < 80:
+        meta_description = _fallback_description(article) or meta_description
     seo = {
         "focus_keyword": _clean_line(seo_raw.get("focus_keyword"), 60),
         "meta_title": _clean_line(seo_raw.get("meta_title") or title, 70),
-        "meta_description": _trim_description(
-            _clean_line(seo_raw.get("meta_description"), 400)),
+        "meta_description": _trim_description(meta_description),
         "slug": _slug(seo_raw.get("slug")),
         "keywords": [
             _clean_line(k, 40) for k in (seo_raw.get("keywords") or [])
             if _clean_line(k, 40)
         ][:10],
+        "video_summary": _clean_line(seo_raw.get("video_summary"), 600),
     }
 
     log_raw = raw.get("story_log") if isinstance(raw.get("story_log"), dict) else {}
