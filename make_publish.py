@@ -363,6 +363,7 @@ def publish(out_dir: Path) -> dict[str, Any]:
         labels = labels_for(category) or split_labels(category)
     labels = labels or labels_for(DEFAULT_CATEGORY)
     draft = _flag("BLOGGER_DRAFT")
+    seo = result.get("seo") if isinstance(result.get("seo"), dict) else {}
 
     payload = {
         "title": title,
@@ -377,6 +378,13 @@ def publish(out_dir: Path) -> dict[str, Any]:
         "thumbnail_url": urls.get("thumbnail.jpg", ""),
         "images": urls,
         "seo": result.get("seo"),
+        # حقول SEO مسطّحة (نصوص مباشرة) ليسهل ربطها بوحدات Make بدل الكائن المتداخل
+        "meta_description": str(seo.get("meta_description") or ""),
+        "meta_title": str(seo.get("meta_title") or ""),
+        "focus_keyword": str(seo.get("focus_keyword") or ""),
+        "slug": str(seo.get("slug") or ""),
+        "keywords_csv": ", ".join(str(k) for k in (seo.get("keywords") or [])),
+        "youtube_url": str(result.get("youtube_url") or ""),
     }
 
     reply = post_to_make(payload)
