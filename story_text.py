@@ -4,6 +4,11 @@
 
 يجب أن يبقى تقسيم الفقرات واحدًا في الوحدتين، لأن لوحة المشاهد تشير إلى الفقرات برقمها
 ويحوّل الفيديو الرقم إلى توقيت في الصوت.
+
+AUTHOR_MARK: رمز يبدأ به سطر «مصدر القصة» الذي يلحقه story_writer.py بآخر القصة
+(وبه يعرف story_writer ألا يكرر السطر، ويعرف story_video أين ينتهي متن القصة قبل سطور
+الختام). وهذا السطر ليس من القصة، فلا يُقرأ بصوت الراوي ولا يُحسب فقرة، كي تبقى أرقام
+الفقرات في لوحة المشاهد مطابقة لتوقيتات الصوت.
 """
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ import re
 
 RELATED_MARK = "اقرأ أيضا"   # بلا تشكيل، للمقارنة
 VIDEO_MARK = "🎧"
+AUTHOR_MARK = "✍️"           # يبدأ به سطر «مصدر القصة» (انظر story_writer.AUTHOR_TEMPLATES)
 
 _DIACRITICS = re.compile(r"[\u064B-\u065F\u0670\u0640]")
 _URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
@@ -21,7 +27,10 @@ def plain(text: str) -> str:
 
 
 def clean_story_text(markdown: str) -> str:
-    """نص صالح للقراءة بصوت عالٍ: بلا Markdown ولا روابط ولا سطور «اقرأ أيضًا» أو الروابط الصوتية."""
+    """
+    نص صالح للقراءة بصوت عالٍ: بلا Markdown ولا روابط، وبلا سطور «اقرأ أيضًا»
+    والروابط الصوتية وسطر «مصدر القصة».
+    """
     lines: list[str] = []
     for raw in (markdown or "").splitlines():
         line = raw.strip()
@@ -30,7 +39,7 @@ def clean_story_text(markdown: str) -> str:
             continue
         if line.startswith("# "):                       # العنوان الرئيسي (يُقرأ منفصلًا)
             continue
-        if RELATED_MARK in plain(line) or VIDEO_MARK in line:
+        if RELATED_MARK in plain(line) or VIDEO_MARK in line or AUTHOR_MARK in line:
             continue
         line = re.sub(r"^#{1,6}\s*", "", line)
         line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)
