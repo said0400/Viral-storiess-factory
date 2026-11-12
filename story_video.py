@@ -46,9 +46,11 @@ from urllib.parse import quote
 
 import requests
 
+import key_pool
 import story_categories
 import story_scenes
 from story_text import (  # clean_story_text و split_chunks متاحتان أيضًا من هذه الوحدة
+    AUTHOR_MARK,
     RELATED_MARK,
     clean_story_text,
     plain as _plain,
@@ -120,12 +122,9 @@ def video_mode() -> str:
 
 def _tts_keys() -> list[str]:
     """مفاتيح Gemini بالترتيب (لكل مفتاح حصته): مفتاح TTS ثم مفتاح تحليل الصور ثم الكتابة."""
-    keys: list[str] = []
-    for name in ("GEMINI_TTS_API_KEY", "GEMINI_API_KEY", "GEMINI_WRITER_API_KEY"):
-        value = os.getenv(name, "").strip()
-        if value and value not in keys:
-            keys.append(value)
-    return keys
+    # كل متغير يقبل عدة مفاتيح مفصولة بفاصلة؛ والمتوقف منها يُهمَل بقية التشغيل
+    keys = key_pool.load_keys("GEMINI_TTS_API_KEY", "GEMINI_API_KEY", "GEMINI_WRITER_API_KEY")
+    return key_pool.usable(keys)
 
 
 def _tts_models() -> list[str]:
@@ -172,6 +171,8 @@ def tts_chunk(text: str) -> tuple[bytes, int]:
 
     for key in keys:
         for model in _tts_models():
+            if key_pool.is_dead(key):
+                break                                     # الحساب توقف: انتقل إلى التالي
             url = f"{GEMINI_BASE_URL}/{model}:generateContent"
             for attempt in range(1, TTS_ATTEMPTS + 1):
                 body: dict[str, Any] = {
@@ -202,7 +203,11 @@ def tts_chunk(text: str) -> tuple[bytes, int]:
                             break                         # حجب أو لا صوت: النموذج التالي
                     last = (f"خطأ Gemini HTTP {response.status_code} ({model}): "
                             f"{response.text[:300]}")
+                    if response.status_code in (401, 403) or "API_KEY_INVALID" in response.text:
+                        key_pool.mark_dead(key, last)     # مفتاح غير صالح أو بلا صلاحية
+                        break
                     if response.status_code == 429 and "PerDay" in response.text:
+                        key_pool.mark_dead(key, last)     # حصة اليوم انتهت لهذا الحساب
                         break                             # حصة اليوم لهذا النموذج/المفتاح
                     if response.status_code == 400 and use_safety:
                         use_safety = False                # قد لا يقبل النموذج safetySettings
@@ -693,7 +698,8 @@ def insert_video_links(markdown: str, url: str) -> str:
     blocks = re.split(r"\n{2,}", markdown.strip())
     start = 1 if blocks and blocks[0].lstrip().startswith("# ") else 0
     stop = len(blocks)
-    while stop > start and RELATED_MARK in _plain(blocks[stop - 1]):
+    while stop > start and (RELATED_MARK in _plain(blocks[stop - 1])
+                            or AUTHOR_MARK in blocks[stop - 1]):
         stop -= 1
     body = blocks[start:stop]
     if not body:
