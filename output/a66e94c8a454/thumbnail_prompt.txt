@@ -1,0 +1,5 @@
+mode: ai_full (محاولة 3: وصف المشهد بلا صور مرجعية)
+model: @cf/black-forest-labs/flux-2-klein-4b
+references: 0
+
+Professional YouTube thumbnail, 16:9 widescreen, dramatic cinematic composition. Robert Pattinson dressed in a black tuxedo holding a gun pointed forward, looking intensely at the camera in classic 007 style. A sleek dark spy headquarters backdrop with dramatic low-key lighting and subtle shadow silhouettes. Strong contrast, vivid saturated colors, soft blurred background, shallow depth of field, a clear focal point following the rule of thirds, subtle vignette. Keep the lower fifth of the frame calm and uncluttered so a headline can be added later. Photorealistic. No text, no letters, no captions, no logos, no watermarks, no borders, no frames.
